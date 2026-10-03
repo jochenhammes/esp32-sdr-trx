@@ -2,7 +2,8 @@
 """Writes docs/espdr-rx.md and docs/espdr-tx.md from the commands' own --help, so that the reference cannot drift from the code.
 
   python scripts/gen-reference.py          # rewrite the two files
-  python scripts/gen-reference.py --check  # exit 1 if they are out of date (CI and the tests)
+  python scripts/gen-reference.py --check  # exit 1 if they differ from this Python's output (the wording of argparse varies a little
+                                           # between Python versions, so CI only checks that every option is listed: tests/test_cli.py)
 """
 import os
 import sys
