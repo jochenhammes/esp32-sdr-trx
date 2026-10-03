@@ -8,7 +8,7 @@ version = "0.0.0.dev0"
 description = "A software-defined transceiver from one ESP32-S3 board: an rtl_tcp receiver for SDR++ and an FM/SSB voice transmitter for 13 cm"
 readme = "README.md"
 license = { text = "0BSD" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = ["numpy>=1.21", "pyserial>=3.5", "esptool>=5.0"]
 
 [project.optional-dependencies]

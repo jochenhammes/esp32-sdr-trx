@@ -9,7 +9,7 @@ A release is a git tag `vX.Y.Z` on `main`. The `Release` workflow (`.github/work
 
 Before tagging:
 
-* CI is green on `main` (host tests on Python 3.9 and 3.12, firmware images and the checks on them, the wheel installed clean).
+* CI is green on `main` (host tests on Python 3.10 and 3.12, firmware images and the checks on them, the wheel installed clean).
 * `python scripts/gen-reference.py --check` is clean (the command reference matches `-h`).
 * Test the CI-built wheel on the board: `pipx install --force <wheel>`; then `espdr-rx` (SDR++ receives), `espdr-tx --dry-run`, a short real
   transmission into a dummy load or at a distance with a receiver listening, `espdr-rx --flash` and a power cycle if the flash path changed.

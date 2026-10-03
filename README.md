@@ -26,7 +26,7 @@ document. This project uses both, on a plain dev board with a USB cable and no F
 ## Install
 
 You need an ESP32-S3 board **with two USB ports** (the second one is a USB-UART bridge that lets the tools load the firmware without
-buttons), a USB cable for each, Linux, and Python 3.9 or newer.
+buttons), a USB cable for each, Linux, and Python 3.10 or newer.
 
 ```sh
 pipx install https://github.com/jochenhammes/esp32-sdr-trx/releases/latest/download/esp32_sdr_trx-X.Y.Z-py3-none-any.whl
