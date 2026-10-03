@@ -1,0 +1,11 @@
+# build output
+firmware/build*/
+build/
+dist/
+*.egg-info/
+__pycache__/
+.venv/
+# recordings and local notes
+/local/
+*.cf32
+*.cs8
