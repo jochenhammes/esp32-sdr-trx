@@ -115,7 +115,7 @@ muted microphone or the wrong input. A sound card's clock differs slightly from 
 | *no USB-UART bridge found, so the firmware cannot be loaded* | Only the native port is connected. Plug in the second USB port as well, or load by hand (hold BOOT, tap RESET) with `--native`. |
 | *several USB-UART bridges found* | Name the board's with `--bridge-port /dev/ttyUSB0`. |
 | SSB sounds like noise | The USB dial is not on the carrier (see *Tuning*), or the demodulator is LSB, or the audio level is too low: watch the input level in the progress line. |
-| *almost no audio arrives* | Wrong or muted input. `espdr-tx --list-devices`, then `-i soundcard:NUMBER`. |
+| *almost no audio arrives* | Wrong or muted input. `espdr-tx --list-devices`, then `-i soundcard:NUMBER`. A laptop microphone is quiet (the progress line showed -36 to -58 dBFS while speaking); the speech AGC raises that, `--gain 10` raises it further. |
 | *the chip does not take data any more* | The chip ended the transmission (watchdog, limit) or the cable was disturbed. Run again. |
 | *the PLL did not lock at this frequency* | Rare inside 2320 to 2450 MHz on the tested board. Try 1 kHz away, or replug the board. |
 | underruns | The computer could not keep up (a slow sound card driver or a busy USB hub). Use `-q` and a direct USB port. |
