@@ -28,6 +28,7 @@ void delay_us(uint32_t us);      /* busy-wait on the cycle counter */
 void serial_write(const void *data, size_t size);
 int serial_read(void);              /* next received byte, or -1 */
 bool serial_rx_pending(void);
+bool serial_try_write(const void *data, size_t size); /* at most 64 bytes, never waits; false if the buffer was busy */
 
 void read_mac(uint8_t mac[6]);
 

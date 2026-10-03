@@ -40,7 +40,9 @@
 #define CTL_FPGA_FIRMWARE_ID 0x49514605
 
 /* Operations understood by both nodes. */
-#define CTL_INFO 1   /* arg 0: firmware id; ESP arg 1/2: MAC bytes 0-3 / 4-5 */
+#define CTL_INFO 1   /* arg 0: firmware id; ESP arg 1/2: MAC bytes 0-3 / 4-5; ESP arg 3: build flags (CTL_BUILD_*) */
+#define CTL_BUILD_NARROWBAND 1 /* the FPGA-free receiver */
+#define CTL_BUILD_TX 2         /* contains the experimental transmitter (protocol/transmit.h) */
 #define CTL_SAFE 2   /* abort any activity and release every link output */
 #define CTL_STATUS 3 /* arg: statistic index (ESP_STAT_* / FPGA_STAT_*) */
 

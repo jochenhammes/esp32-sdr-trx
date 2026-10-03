@@ -9,3 +9,4 @@ __pycache__/
 /local/
 *.cf32
 *.cs8
+src/espdr/images/

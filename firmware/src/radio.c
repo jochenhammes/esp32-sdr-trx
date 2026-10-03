@@ -484,473 +484,224 @@ void coex_pti_print(void) {}
 
 int64_t esp_timer_get_time(void) { return (int64_t)(timer_ticks() / 16); }
 
-#ifdef ESPDR_TXTEST
-#include "txsin.h"
-/* ---- transmit research (never part of a release) ------------------------------- */
+#ifdef ESPDR_TX
+/* ---- transmitter (experimental) ---------------------------------------------------------------- */
+#include "transmit.h"
 
 extern void txcal_debuge_mode(void);
 extern void txcal_work_mode(void);
 extern void start_tx_tone_step(int a, int i, int g, int b, int q, int h);
 
-static uint32_t sdm_readback(void)
-{
-    return ((uint32_t)analog_read(I2C_SDM, 3) << 16) | ((uint32_t)analog_read(I2C_SDM, 4) << 8) | analog_read(I2C_SDM, 5);
-}
-
-/*
- * The sequence of the PHY's own continuous-wave test (wifiscwout in librftest): test mode, then
- * start_tx_tone_step(1, 0, g, 0, 0, 0): amplitude 1, I = Q = 0, gain field -g. Only the channel selection is ours: the PLL
- * is programmed through tune_pll() before and after the PHY's test mode, so the carrier sits where the LO plan puts it.
- */
-unsigned radio_tx_test(uint32_t lo_khz, unsigned g, unsigned ms, uint32_t *info)
-{
-    if (lo_khz < TX_MIN_KHZ || lo_khz > TX_MAX_KHZ || g < TX_MIN_G || g > 127 || ms == 0 || ms > 30000)
-        return CTL_BAD_ARGUMENT;
-    if (receiver.status != ESP_RADIO_OK)
-        return CTL_NOT_READY;
-    unsigned status = CTL_OK;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            start_tx_tone_step(1, 0, (int)g, 0, 0, 0);
-            *info = sdm_readback();
-            for (unsigned t = 0; t < ms; t += 1000) /* delay_us() counts CPU cycles in 32 bits: at most 17 s at a time */
-                delay_us((ms - t < 1000 ? ms - t : 1000) * 1000u);
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
-        }
-        txcal_work_mode();
-    }
-    receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
-}
-
-unsigned radio_tx_nco(uint32_t lo_khz, unsigned g, unsigned ms, uint32_t offset_hz, uint32_t rate_hz, unsigned amp,
-                      uint32_t *info)
-{
-    if (lo_khz < TX_MIN_KHZ || lo_khz > TX_MAX_KHZ || g < TX_MIN_G || g > 127 || ms == 0 || ms > 2000 ||
-        rate_hz < 1000 || rate_hz > 1500000 || amp > TX_MAX_AMP || offset_hz > rate_hz / 2)
-        return CTL_BAD_ARGUMENT;
-    if (receiver.status != ESP_RADIO_OK)
-        return CTL_NOT_READY;
-    unsigned status = CTL_OK;
-    uint32_t late = 0;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            uint32_t step = (uint32_t)(((uint64_t)offset_hz << 32) / rate_hz);
-            uint32_t period = 240000000u / rate_hz, phase = 0;
-            uint32_t total = (uint32_t)((uint64_t)ms * rate_hz / 1000u);
-            start_tx_tone_step(1, 0, (int)g, 0, 0, 0);
-            uint32_t next = cpu_cycles() + period;
-            for (uint32_t k = 0; k < total; k++) {
-                int i = (int)(((int32_t)tx_sin[((phase >> 24) + 64) & 255] * (int32_t)amp) >> 15);
-                int q = (int)(((int32_t)tx_sin[(phase >> 24) & 255] * (int32_t)amp) >> 15);
-                if ((int32_t)(cpu_cycles() - next) > 0)
-                    late++;
-                while ((int32_t)(cpu_cycles() - next) < 0)
-                    ;
-                start_tx_tone_step(1, i, (int)g, 0, q, 0);
-                phase += step;
-                next += period;
-            }
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
-        }
-        txcal_work_mode();
-    }
-    *info = late;
-    receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
-}
-
-unsigned radio_tx_ladder(uint32_t lo_khz, unsigned g, const uint32_t *states, unsigned count, unsigned hold_ms,
-                         uint32_t *info)
-{
-    if (lo_khz < TX_MIN_KHZ || lo_khz > TX_MAX_KHZ || g < TX_MIN_G || g > 255 || count == 0 || count > TX_MAX_STATES ||
-        hold_ms == 0 || hold_ms * count > 2000)
-        return CTL_BAD_ARGUMENT;
-    if (receiver.status != ESP_RADIO_OK)
-        return CTL_NOT_READY;
-    unsigned status = CTL_OK, run = 0;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            for (unsigned k = 0; k < count; k++, run++) {
-                uint32_t w = states[k];
-                int i = ((int32_t)(w << 10)) >> 22, q = ((int32_t)w) >> 22; /* sign-extended 10-bit fields */
-                start_tx_tone_step((int)(w & 63u), i * 4, (int)g, (int)((w >> 6) & 63u), q * 4, 0);
-                delay_us(hold_ms * 1000u);
-            }
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
-        }
-        txcal_work_mode();
-    }
-    *info = run;
-    receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
-}
-
-static void sdm_write(uint32_t word)
-{
-    analog_write(I2C_SDM, 0, 0x07);
-    analog_write(I2C_SDM, 3, (uint8_t)(word >> 16));
-    analog_write(I2C_SDM, 4, (uint8_t)(word >> 8));
-    analog_write(I2C_SDM, 5, (uint8_t)word);
-    analog_write(I2C_SDM, 0, 0x17);
-}
-
-unsigned radio_tx_fsk(uint32_t lo_khz, unsigned g, unsigned ms, uint32_t dev_hz, uint32_t toggle_hz, unsigned fast,
-                      uint32_t *info)
-{
-    struct esp32s3_lo_plan p0, p1;
-    if (lo_khz < TX_MIN_KHZ || lo_khz + dev_hz / 1000u + 1 > TX_MAX_KHZ || g < TX_MIN_G || g > 127 || ms == 0 || ms > 2000 ||
-        dev_hz == 0 || dev_hz > 20000 || toggle_hz == 0 || toggle_hz > 5000 ||
-        !esp32s3_plan_lo(lo_khz * 1000u, ESP32S3_LO_NORMAL, &p0) || !esp32s3_plan_lo(lo_khz * 1000u + dev_hz, ESP32S3_LO_NORMAL, &p1))
-        return CTL_BAD_ARGUMENT;
-    if (receiver.status != ESP_RADIO_OK)
-        return CTL_NOT_READY;
-    unsigned status = CTL_OK;
-    uint32_t updates = 0;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            start_tx_tone_step(1, 0, (int)g, 0, 0, 0);
-            /* fast: only the low byte of the word is written, one register access and no bracket; valid while the two words
-             * differ in that byte only (a deviation below 117 kHz that does not cross a 256-step boundary) */
-            if (fast && (p0.sdm_word >> 8) != (p1.sdm_word >> 8))
-                fast = 0;
-            uint32_t half = 120000000u / toggle_hz, next = cpu_cycles() + half, total = (uint32_t)((uint64_t)ms * toggle_hz * 2 / 1000u);
-            for (uint32_t k = 0; k < total; k++) {
-                uint32_t word = (k & 1u) ? p0.sdm_word : p1.sdm_word; /* the first half is the upper frequency */
-                if (fast)
-                    analog_write(I2C_SDM, 5, (uint8_t)word);
-                else
-                    sdm_write(word);
-                updates++;
-                while ((int32_t)(cpu_cycles() - next) < 0)
-                    ;
-                next += half;
-            }
-            sdm_write(p0.sdm_word);
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
-        }
-        txcal_work_mode();
-    }
-    *info = updates;
-    receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
-}
-
-unsigned radio_tx_fm(uint32_t lo_khz, unsigned g, unsigned ms, uint32_t tone_hz, uint32_t dev_hz, uint32_t rate_hz,
-                     uint32_t *info)
-{
-    struct esp32s3_lo_plan p0;
-    if (lo_khz < TX_MIN_KHZ || lo_khz + dev_hz / 1000u + 1 > TX_MAX_KHZ || g < TX_MIN_G || g > 127 || ms == 0 || ms > 2000 ||
-        dev_hz == 0 || dev_hz > 20000 || rate_hz < 2000 || rate_hz > 40000 || tone_hz == 0 || tone_hz * 4 > rate_hz ||
-        !esp32s3_plan_lo(lo_khz * 1000u, ESP32S3_LO_NORMAL, &p0))
-        return CTL_BAD_ARGUMENT;
-    /* the swing in word steps (Q16) must fit into the low byte around the base word */
-    uint32_t steps_q16 = (uint32_t)(((uint64_t)dev_hz << 16) * 65536u / 30000000u); /* dev / (30 MHz / 65536), Q16 */
-    unsigned steps = (steps_q16 >> 16) + 2;
-    if ((p0.sdm_word & 0xFF) < steps || (p0.sdm_word & 0xFF) > 255 - steps)
-        return CTL_BAD_ARGUMENT;
-    if (receiver.status != ESP_RADIO_OK)
-        return CTL_NOT_READY;
-    unsigned status = CTL_OK;
-    uint32_t updates = 0;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            uint32_t step = (uint32_t)(((uint64_t)tone_hz << 32) / rate_hz), phase = 0;
-            uint32_t period = 240000000u / rate_hz, total = (uint32_t)((uint64_t)ms * rate_hz / 1000u);
-            int32_t err = 0;
-            start_tx_tone_step(1, 0, (int)g, 0, 0, 0);
-            uint32_t next = cpu_cycles() + period;
-            for (uint32_t k = 0; k < total; k++) {
-                int32_t target = (int32_t)(((int64_t)tx_sin[(phase >> 24) & 255] * (int64_t)steps_q16) >> 15); /* Q16 steps */
-                err += target;
-                int32_t w = (err + 0x8000) >> 16;
-                err -= w * 65536;
-                analog_write(I2C_SDM, 5, (uint8_t)((int32_t)(p0.sdm_word & 0xFF) + w));
-                updates++;
-                phase += step;
-                while ((int32_t)(cpu_cycles() - next) < 0)
-                    ;
-                next += period;
-            }
-            analog_write(I2C_SDM, 5, (uint8_t)p0.sdm_word);
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
-        }
-        txcal_work_mode();
-    }
-    *info = updates;
-    receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
-}
-
-/* The audio buffer sits in capture banks, which take 32-bit accesses only: read the word and pick the byte. */
-static inline int32_t tx_byte(const void *base, uint32_t index, int is_signed)
-{
-    uint32_t w = ((const volatile uint32_t *)base)[index >> 2];
-    uint32_t b = (w >> (8 * (index & 3u))) & 0xFFu;
-    return is_signed ? (int32_t)(int8_t)b : (int32_t)b;
-}
-
-unsigned radio_tx_audio(uint32_t lo_khz, unsigned g, uint32_t dev_hz, uint32_t rate_hz, unsigned up, const int8_t *buf,
-                        uint32_t n, uint32_t *info)
-{
-    struct esp32s3_lo_plan p0;
-    if (lo_khz < TX_MIN_KHZ || lo_khz + dev_hz / 1000u + 1 > TX_MAX_KHZ || g < TX_MIN_G || g > 127 || n == 0 ||
-        n > TX_AUDIO_MAX || (up != 1 && up != 2) || (uint64_t)n * up * 1000u > (uint64_t)rate_hz * 12000u || dev_hz == 0 ||
-        dev_hz > 5000 || rate_hz < 8000 || rate_hz > 40000 || !esp32s3_plan_lo(lo_khz * 1000u, ESP32S3_LO_NORMAL, &p0))
-        return CTL_BAD_ARGUMENT;
-    uint32_t steps_q16 = (uint32_t)(((uint64_t)dev_hz << 16) * 65536u / 30000000u);
-    unsigned steps = (steps_q16 >> 16) + 6; /* second-order shaping swings wider than the signal */
-    if ((p0.sdm_word & 0xFF) < steps || (p0.sdm_word & 0xFF) > 255 - steps)
-        return CTL_BAD_ARGUMENT;
-    if (receiver.status != ESP_RADIO_OK)
-        return CTL_NOT_READY;
-    unsigned status = CTL_OK;
-    uint32_t played = 0;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            uint32_t period = 240000000u / rate_hz;
-            int32_t e1 = 0, e2 = 0; /* quantisation errors of the last two updates, Q16 */
-            start_tx_tone_step(1, 0, (int)g, 0, 0, 0);
-            delay_us(20000); /* 20 ms of plain carrier before the audio starts */
-            uint32_t next = cpu_cycles() + period;
-            for (uint32_t k = 0; k < n * up; k++) {
-                int32_t s0 = tx_byte(buf, k / up, 1), s1 = tx_byte(buf, k / up + 1 < n ? k / up + 1 : k / up, 1);
-                int32_t s = up == 2 && (k & 1u) ? (s0 + s1) / 2 : s0; /* linear interpolation between the stored samples */
-                int32_t v = (int32_t)(((int64_t)s * steps_q16) / 127);  /* wanted offset in word steps, Q16 */
-                int32_t u = v - 2 * e1 + e2;                            /* error feedback, noise transfer function (1 - z^-1)^2 */
-                int32_t w = (u + 0x8000) >> 16;
-                e2 = e1;
-                e1 = w * 65536 - u;
-                analog_write(I2C_SDM, 5, (uint8_t)((int32_t)(p0.sdm_word & 0xFF) + w));
-                played++;
-                while ((int32_t)(cpu_cycles() - next) < 0)
-                    ;
-                next += period;
-            }
-            analog_write(I2C_SDM, 5, (uint8_t)p0.sdm_word);
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
-        }
-        txcal_work_mode();
-    }
-    *info = played;
-    receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
-}
-
 #define TX_FRONTEND_I_REG (*(volatile uint32_t *)0x60006040u)
+#define TX_RING_BASE 0x3FCB0000u /* capture banks 0..2; bank 3 holds the ROM's working memory */
+#define TX_RING_RECORDS (TX_RING_BYTES / TX_RECORD_BYTES)
+#define TX_WATCHDOG_CYCLES 120000000u /* 500 ms */
+#define TX_CARRIER_LEAD_US 20000u
+#define TX_STATUS_PERIOD_US 5000u
 
+static struct {
+    uint32_t lo_hz, rate_hz, limit_s;
+    int32_t drift_hz;
+    uint32_t word;
+    bool prepared;
+} tx = {.rate_hz = 40000, .limit_s = 600};
+
+/* Bits 17:10 of the frontend register hold (-g) & 0xFF: the gain code; smaller g is stronger (0.28 dB per code for g <= 127). */
 static inline void tx_set_gain(unsigned g)
 {
     TX_FRONTEND_I_REG = (TX_FRONTEND_I_REG & ~(0xFFu << 10)) | (((0u - g) & 0xFFu) << 10);
 }
 
-unsigned radio_tx_gain(uint32_t lo_khz, unsigned mode, unsigned a, unsigned b, int c, unsigned d, uint32_t *info)
+unsigned radio_tx_set(unsigned op, uint32_t arg)
 {
-    if (lo_khz < TX_MIN_KHZ || lo_khz > TX_MAX_KHZ || a < TX_GAIN_MIN_G || a > 255 || b < TX_GAIN_MIN_G || b > 255 || mode > 1 ||
-        d == 0 || d > 2000 || c == 0 || (mode == 0 && (c > 128 || c < -128)) || (mode == 1 && (c < 0 || c > 40000)))
+    switch (op) {
+    case TX_OP_LO:
+        if (arg < TX_MIN_HZ / 100u || arg > TX_MAX_HZ / 100u)
+            return CTL_BAD_ARGUMENT;
+        tx.lo_hz = arg * 100u;
+        return CTL_OK;
+    case TX_OP_RATE:
+        if (arg < 8000 || arg > 40000)
+            return CTL_BAD_ARGUMENT;
+        tx.rate_hz = arg;
+        return CTL_OK;
+    case TX_OP_DRIFT:
+        tx.drift_hz = (int16_t)arg;
+        return tx.drift_hz >= -2000 && tx.drift_hz <= 2000 ? CTL_OK : CTL_BAD_ARGUMENT;
+    case TX_OP_LIMIT:
+        if (arg < 1 || arg > 3600)
+            return CTL_BAD_ARGUMENT;
+        tx.limit_s = arg;
+        return CTL_OK;
+    default:
+        return CTL_UNKNOWN_OP;
+    }
+}
+
+unsigned radio_tx_begin(uint32_t *word)
+{
+    struct esp32s3_lo_plan plan;
+    tx.prepared = false;
+    if (tx.lo_hz < TX_MIN_HZ || tx.lo_hz > TX_MAX_HZ || !esp32s3_plan_lo(tx.lo_hz, ESP32S3_LO_NORMAL, &plan))
         return CTL_BAD_ARGUMENT;
-    if (mode == 0 && ((c > 0 && a > b) || (c < 0 && a < b) || (unsigned)(b > a ? b - a : a - b) / (unsigned)(c < 0 ? -c : c) * d > 4000))
-        return CTL_BAD_ARGUMENT;
+    *word = plan.sdm_word;
+    unsigned low = plan.sdm_word & 0xFF;
+    if (low < TX_LOW_MARGIN || low > 255 - TX_LOW_MARGIN)
+        return CTL_BAD_ARGUMENT; /* the host moves the LO by up to 22 kHz so that the offsets never carry into the next byte */
     if (receiver.status != ESP_RADIO_OK)
         return CTL_NOT_READY;
-    unsigned status = CTL_OK;
-    uint32_t writes = 0;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            start_tx_tone_step(1, 0, (int)TX_GAIN_MIN_G, 0, 0, 0);
-            delay_us(20000);
-            if (mode == 0) {
-                for (int g = (int)a;; g += c) {
-                    if ((c > 0 && g > (int)b) || (c < 0 && g < (int)b))
-                        break;
-                    tx_set_gain((unsigned)g);
-                    writes++;
-                    delay_us(d * 1000u);
-                }
+    bool ok = release_receiver() && tune_pll(tx.lo_hz);
+    if (ok) {
+        txcal_debuge_mode(); /* the PHY's own transmit test mode; it may move the PLL, so tune again */
+        ok = tune_pll(tx.lo_hz);
+    }
+    if (!ok) {
+        txcal_work_mode();
+        receiver.status = reconfigure(true);
+        return CTL_FAILED;
+    }
+    tx.word = plan.sdm_word;
+    tx.prepared = true;
+    return CTL_OK;
+}
+
+/* Takes what the host has sent into the ring (at most one USB packet per call). */
+static inline void tx_pull(volatile uint32_t *ring, uint32_t *head, uint32_t tail, uint32_t *stage, unsigned *count, uint32_t *last_rx,
+                           uint32_t *overruns)
+{
+    int c;
+    for (unsigned budget = 64; budget && (c = serial_read()) >= 0; budget--) {
+        *stage |= (uint32_t)c << (8 * *count);
+        *last_rx = cpu_cycles();
+        if (++*count == TX_RECORD_BYTES) {
+            uint32_t next = *head + 1 == TX_RING_RECORDS ? 0 : *head + 1;
+            if (next == tail) {
+                (*overruns)++; /* the host did not respect the fill level: drop */
             } else {
-                uint32_t half = 240000000u / (2u * (uint32_t)c), end = cpu_cycles() + d * 240000u, next = cpu_cycles() + half;
-                unsigned g = a;
-                tx_set_gain(g);
-                writes++;
-                while ((int32_t)(end - cpu_cycles()) > 0) {
-                    while ((int32_t)(cpu_cycles() - next) < 0)
-                        ;
-                    next += half;
-                    g = g == a ? b : a;
-                    tx_set_gain(g);
-                    writes++;
+                ring[*head] = *stage;
+                *head = next;
+            }
+            *stage = 0;
+            *count = 0;
+        }
+    }
+}
+
+static inline uint32_t sat8(uint32_t v) { return v > 255 ? 255 : v; }
+
+uint32_t radio_tx_run(void)
+{
+    volatile uint32_t *ring = (volatile uint32_t *)TX_RING_BASE;
+    uint32_t head = 0, tail = 0, stage = 0, overruns = 0, underruns = 0, late = 0, last_rx = cpu_cycles();
+    unsigned staged = 0, reason = TX_END_REQUESTED, seq = 0;
+    bool ended = false, carrier = false;
+    const uint32_t period = 240000000u / tx.rate_hz;
+    const uint32_t base = tx.word & 0xFF;
+    uint32_t status_due = cpu_cycles();
+    uint32_t end_flag_seen = 0;
+
+    /* wait for the prefill (or a short clip that already carries the end record), reporting the fill level meanwhile */
+    uint32_t started = cpu_cycles();
+    for (;;) {
+        tx_pull(ring, &head, tail, &stage, &staged, &last_rx, &overruns);
+        uint32_t fill = head >= tail ? head - tail : head + TX_RING_RECORDS - tail;
+        if (fill >= TX_PREFILL)
+            break;
+        if (fill && ((ring[(head ? head : TX_RING_RECORDS) - 1] >> 24) & TX_FLAG_END))
+            break;
+        if (cpu_cycles() - started > 3u * 240000000u) {
+            reason = TX_END_WATCHDOG;
+            ended = true;
+            break;
+        }
+        if ((int32_t)(cpu_cycles() - status_due) >= 0) {
+            uint8_t f[TX_STATUS_BYTES] = {TX_STATUS_MAGIC, (uint8_t)seq++, (uint8_t)fill, (uint8_t)(fill >> 8), 0, 0, 0, 0};
+            f[7] = (uint8_t)(0x100 - (f[0] + f[1] + f[2] + f[3] + f[4] + f[5] + f[6]));
+            serial_try_write(f, sizeof(f));
+            status_due += TX_STATUS_PERIOD_US * 240u;
+        }
+    }
+
+    uint32_t played = 0;
+    if (!ended) {
+        /* key the carrier at the weakest end of the smooth gain branch, with 20 ms of plain carrier before the first record */
+        start_tx_tone_step(1, 0, TX_GAIN_WEAKEST, 0, 0, 0);
+        carrier = true;
+        int32_t c = (int32_t)(-((int64_t)tx.drift_hz << 24) * 65536 / 30000000), cacc = 0; /* drift correction in word steps, Q24 */
+        uint32_t lead_end = cpu_cycles() + TX_CARRIER_LEAD_US * 240u;
+        while ((int32_t)(cpu_cycles() - lead_end) < 0)
+            tx_pull(ring, &head, tail, &stage, &staged, &last_rx, &overruns);
+        for (uint32_t i = 0; i < tx.rate_hz / 50u; i++)
+            c -= c >> 15;
+        int32_t e1 = 0, e2 = 0; /* quantisation errors of the last two updates, Q16 */
+        uint32_t record = TX_GAIN_WEAKEST << 16;
+        const uint32_t total = tx.limit_s * tx.rate_hz;
+        uint32_t next = cpu_cycles() + period;
+        uint32_t status_every = tx.rate_hz / 200u, status_count = 0;
+        while (!ended) {
+            if ((int32_t)(cpu_cycles() - next) > 0)
+                late++;
+            while ((int32_t)(cpu_cycles() - next) < 0)
+                ;
+            next += period;
+            tx_pull(ring, &head, tail, &stage, &staged, &last_rx, &overruns);
+            if (tail != head) {
+                record = ring[tail];
+                tail = tail + 1 == TX_RING_RECORDS ? 0 : tail + 1;
+                if ((record >> 24) & TX_FLAG_END)
+                    end_flag_seen = 1;
+            } else {
+                underruns++;
+                if (cpu_cycles() - last_rx > TX_WATCHDOG_CYCLES) {
+                    reason = TX_END_WATCHDOG;
+                    break;
                 }
             }
-            delay_us(20000);
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
-        }
-        txcal_work_mode();
-    }
-    *info = writes;
-    receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
-}
-
-extern void target_power_backoff(int backoff);
-uint32_t tx_regs[25];
-
-unsigned radio_tx_regs(uint32_t lo_khz, unsigned g, uint32_t *info)
-{
-    if (lo_khz < TX_MIN_KHZ || lo_khz > TX_MAX_KHZ || g < 64 || g > 255)
-        return CTL_BAD_ARGUMENT;
-    if (receiver.status != ESP_RADIO_OK)
-        return CTL_NOT_READY;
-    unsigned status = CTL_OK;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            for (unsigned i = 0; i < 25; i++)
-                tx_regs[i] = *(volatile uint32_t *)(0x60006000u + 4u * i); /* after txcal_debuge_mode, carrier not yet on */
-            start_tx_tone_step(1, 0, (int)g, 0, 0, 0);
-            delay_us(30000);
-            for (unsigned i = 0; i < 25; i++)
-                if (i == 0 || i == 1 || i == 16 || i == 17 || i == 20)
-                    tx_regs[i] = *(volatile uint32_t *)(0x60006000u + 4u * i); /* 0, 4, 0x40, 0x44, 0x50 with the carrier on */
-            *info = tx_regs[16];
-            delay_us(20000);
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
-        }
-        txcal_work_mode();
-    }
-    receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
-}
-
-unsigned radio_tx_backoff(uint32_t lo_khz, unsigned g, int b0, int b1, int step, unsigned hold_ms, uint32_t *info)
-{
-    if (lo_khz < TX_MIN_KHZ || lo_khz > TX_MAX_KHZ || g < 64 || g > 255 || b0 < 0 || b1 < 0 || b0 > 127 || b1 > 127 || step == 0 ||
-        step > 64 || step < -64 || hold_ms == 0 || hold_ms > 500 || (step > 0 && b0 > b1) || (step < 0 && b0 < b1))
-        return CTL_BAD_ARGUMENT;
-    if (receiver.status != ESP_RADIO_OK)
-        return CTL_NOT_READY;
-    unsigned status = CTL_OK;
-    uint32_t cycles = 0;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            start_tx_tone_step(1, 0, (int)g, 0, 0, 0);
-            delay_us(30000);
-            for (int b = b0; step > 0 ? b <= b1 : b >= b1; b += step) {
-                uint32_t t = cpu_cycles();
-                target_power_backoff(b);
-                cycles = cpu_cycles() - t;
-                delay_us(hold_ms * 1000u);
+            unsigned g = (record >> 16) & 0xFF;
+            g = g < TX_GAIN_STRONGEST ? TX_GAIN_STRONGEST : g > TX_GAIN_WEAKEST ? TX_GAIN_WEAKEST : g;
+            int32_t v = (int32_t)(int16_t)(record & 0xFFFF) * 4096; /* 1/16 step in Q16 */
+            cacc += c;
+            int32_t wc = (cacc + (1 << 23)) >> 24;
+            cacc -= wc << 24;
+            c -= c >> 15;
+            int32_t u = v - 2 * e1 + e2; /* second-order error feedback: noise transfer function (1 - z^-1)^2 */
+            int32_t w = (u + 0x8000) >> 16;
+            e2 = e1;
+            e1 = w * 65536 - u;
+            int32_t dw = w + wc;
+            dw = dw > TX_MAX_STEPS ? TX_MAX_STEPS : dw < -TX_MAX_STEPS ? -TX_MAX_STEPS : dw;
+            tx_set_gain(g);
+            analog_write(I2C_SDM, 5, (uint8_t)((int32_t)base + dw));
+            played++;
+            if (end_flag_seen) {
+                ended = true;
+                break;
             }
-            delay_us(20000);
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
-        }
-        txcal_work_mode();
-    }
-    *info = cycles;
-    receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
-}
-
-unsigned radio_tx_ssb(uint32_t lo_khz, uint32_t rate_hz, const uint8_t *buf, uint32_t n, unsigned loops, int drift_hz,
-                      uint32_t *info)
-{
-    struct esp32s3_lo_plan p0;
-    if (lo_khz < TX_MIN_KHZ || lo_khz > TX_MAX_KHZ || n == 0 || n * 2u > TX_AUDIO_MAX || rate_hz < 8000 || rate_hz > 40000 ||
-        loops == 0 || loops > 30 || (uint64_t)n * loops * 1000u > (uint64_t)rate_hz * 30000u || drift_hz < -2000 || drift_hz > 2000 ||
-        !esp32s3_plan_lo(lo_khz * 1000u, ESP32S3_LO_NORMAL, &p0))
-        return CTL_BAD_ARGUMENT;
-    uint32_t base = p0.sdm_word & 0xFF;
-    if (base < 40 || base > 215)
-        return CTL_BAD_ARGUMENT;
-    if (receiver.status != ESP_RADIO_OK)
-        return CTL_NOT_READY;
-    unsigned status = CTL_OK;
-    uint32_t late = 0;
-    if (!release_receiver() || !tune_pll(lo_khz * 1000u)) {
-        status = CTL_FAILED;
-    } else {
-        txcal_debuge_mode();
-        if (!tune_pll(lo_khz * 1000u)) {
-            status = CTL_FAILED;
-        } else {
-            uint32_t period = 240000000u / rate_hz;
-            /* drift correction in word steps, Q24: c = -drift_hz / 458.8 Hz, decaying by 1/32768 per update */
-            int32_t c = (int32_t)(-((int64_t)drift_hz << 24) * 65536 / 30000000), cacc = 0;
-            start_tx_tone_step(1, 0, 127, 0, 0, 0);
-            delay_us(20000);
-            /* the correction has been running for the 20 ms of carrier */
-            for (uint32_t i = 0; i < rate_hz / 50u; i++)
-                c -= c >> 15;
-            uint32_t next = cpu_cycles() + period;
-            for (unsigned pass = 0; pass < loops; pass++) {
-                for (uint32_t k = 0; k < n; k++) {
-                    int32_t dw = tx_byte(buf, 2u * k, 1);
-                    unsigned g = (unsigned)tx_byte(buf, 2u * k + 1, 0);
-                    g = g < 64 ? 64 : g > 127 ? 127 : g;
-                    cacc += c;
-                    int32_t wc = (cacc + (1 << 23)) >> 24;
-                    cacc -= wc << 24;
-                    c -= c >> 15;
-                    if ((int32_t)(cpu_cycles() - next) > 0)
-                        late++;
-                    while ((int32_t)(cpu_cycles() - next) < 0)
-                        ;
-                    tx_set_gain(g);
-                    analog_write(I2C_SDM, 5, (uint8_t)((int32_t)base + dw + wc));
-                    next += period;
-                }
+            if (played >= total) {
+                reason = TX_END_LIMIT;
+                break;
             }
-            analog_write(I2C_SDM, 5, (uint8_t)base);
-            delay_us(20000);
-            start_tx_tone_step(0, 0, 0, 0, 0, 0);
+            if (++status_count >= status_every) {
+                status_count = 0;
+                uint32_t fill = head >= tail ? head - tail : head + TX_RING_RECORDS - tail;
+                uint8_t f[TX_STATUS_BYTES] = {TX_STATUS_MAGIC, (uint8_t)seq++, (uint8_t)fill, (uint8_t)(fill >> 8),
+                                              (uint8_t)sat8(underruns), (uint8_t)sat8(late), TX_STATUS_CARRIER, 0};
+                f[7] = (uint8_t)(0x100 - (f[0] + f[1] + f[2] + f[3] + f[4] + f[5] + f[6]));
+                serial_try_write(f, sizeof(f));
+            }
         }
-        txcal_work_mode();
     }
-    *info = late;
+
+    if (carrier) {
+        analog_write(I2C_SDM, 5, (uint8_t)base);
+        start_tx_tone_step(0, 0, 0, 0, 0, 0);
+    }
+    txcal_work_mode();
     receiver.status = reconfigure(true);
-    return receiver.status == ESP_RADIO_OK ? status : CTL_FAILED;
+    tx.prepared = false;
+    if (receiver.status != ESP_RADIO_OK)
+        reason = TX_END_FAILED;
+    (void)overruns;
+    return (uint32_t)reason << 24 | sat8(underruns) << 16 | (late > 0xFFFF ? 0xFFFF : late);
 }
 #endif

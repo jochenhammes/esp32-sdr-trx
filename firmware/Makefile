@@ -9,9 +9,13 @@ CROSS ?= xtensa-esp32s3-elf-
 ESPTOOL ?= esptool.py
 # NARROWBAND=1 builds the FPGA-free receiver: the ESP32-S3 samples at 16 Msps,
 # decimates on chip and streams over USB Serial/JTAG (see protocol/narrowband.h).
-NARROWBAND ?= 0
-ifeq ($(NARROWBAND),1)
-BUILD ?= build-nb
+NARROWBAND ?= 1
+# TX=1 adds the experimental transmitter (protocol/transmit.h). It is a separate image: the receiver image contains no transmit code.
+TX ?= 0
+ifeq ($(TX),1)
+BUILD ?= build-tx
+else ifeq ($(NARROWBAND),1)
+BUILD ?= build-rx
 else
 BUILD ?= build
 endif
@@ -54,8 +58,8 @@ SDK_INCLUDES := -I. $(addprefix -I$(IDF)/,$(SDK_INCLUDE_DIRS))
 
 ifeq ($(NARROWBAND),1)
 NB_FLAGS := -DESPDR_NARROWBAND=1
-ifeq ($(TXTEST),1)
-NB_FLAGS += -DESPDR_TXTEST=1 # RESEARCH ONLY: transmit experiments, see docs/TX-RESEARCH.md. Never part of a release.
+ifeq ($(TX),1)
+NB_FLAGS += -DESPDR_TX=1
 endif
 ifeq ($(PROFILE),1)
 NB_FLAGS += -DPROFILE=1 # per-section cycle counters in dsp_unit(), read with `espdr_nb.py dspbench --profile`

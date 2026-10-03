@@ -111,6 +111,17 @@ void serial_write(const void *data, size_t size)
     REG(USB_SERIAL_JTAG_EP1_CONF_REG) = USB_SERIAL_JTAG_WR_DONE;
 }
 
+bool serial_try_write(const void *data, size_t size)
+{
+    const uint8_t *bytes = data;
+    if (!(REG(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_IN_EP_DATA_FREE))
+        return false;
+    for (size_t i = 0; i < size && (REG(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_IN_EP_DATA_FREE); i++)
+        REG(USB_SERIAL_JTAG_EP1_REG) = bytes[i];
+    REG(USB_SERIAL_JTAG_EP1_CONF_REG) = USB_SERIAL_JTAG_WR_DONE;
+    return true;
+}
+
 bool serial_rx_pending(void)
 {
     return REG(USB_SERIAL_JTAG_EP1_CONF_REG) & USB_SERIAL_JTAG_SERIAL_OUT_EP_DATA_AVAIL;

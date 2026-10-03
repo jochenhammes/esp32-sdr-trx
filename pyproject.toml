@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "esp32-sdr-trx"
+version = "0.0.0.dev0"
+description = "A software-defined transceiver from one ESP32-S3 board: an rtl_tcp receiver for SDR++ and an FM/SSB voice transmitter for 13 cm"
+readme = "README.md"
+license = { text = "0BSD" }
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.21", "pyserial>=3.5", "esptool>=5.0"]
+
+[project.optional-dependencies]
+audio = ["sounddevice>=0.4"]
+dev = ["scipy>=1.7", "pytest>=7"]
+
+[project.scripts]
+espdr-rx = "espdr.cli_rx:main"
+espdr-tx = "espdr.cli_tx:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+espdr = ["images/*.bin"]

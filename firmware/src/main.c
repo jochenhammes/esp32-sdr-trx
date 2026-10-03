@@ -18,6 +18,9 @@
 #ifdef ESPDR_NARROWBAND
 #include "narrowband.h"
 #include "stream.h"
+#ifdef ESPDR_TX
+#include "transmit.h"
+#endif
 #endif
 #include "soc/gpio_reg.h"
 #include "soc/gpio_sig_map.h"
@@ -170,22 +173,29 @@ static uint32_t info(unsigned what)
     case 0: return CTL_ESP_FIRMWARE_ID;
     case 1: return load_le(mac, 4);
     case 2: return load_le(mac + 4, 2);
+    case 3:
+        return 0
+#ifdef ESPDR_NARROWBAND
+               | CTL_BUILD_NARROWBAND
+#endif
+#ifdef ESPDR_TX
+               | CTL_BUILD_TX
+#endif
+            ;
     default: return 0;
     }
 }
 
-#ifdef ESPDR_TXTEST
-static unsigned tx_test_ms = 500;
-static uint32_t tx_audio_len;
-static uint32_t tx_states[16], tx_states_n, tx_hold_ms = 50;
-static uint32_t tx_nco_hz = 20000, tx_nco_rate = 100000, tx_nco_amp = 400;
+
+#ifdef ESPDR_TX
+static bool tx_pending; /* a TX_OP_BEGIN was answered: the stream runs after the reply */
 #endif
 
 static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
 {
     switch (op) {
     case CTL_INFO:
-        if (arg > 2)
+        if (arg > 3)
             return CTL_BAD_ARGUMENT;
         *value = info(arg);
         return CTL_OK;
@@ -237,86 +247,19 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
         *value = stream_dsp_bench(arg);
         return CTL_OK;
 #endif
-#ifdef ESPDR_TXTEST
-    case 60: /* RESEARCH: duration of the test carrier, ms (default 500) */
-        tx_test_ms = arg;
-        *value = arg;
-        return arg >= 1 && arg <= 30000 ? CTL_OK : CTL_BAD_ARGUMENT;
-    case 62: /* RESEARCH: NCO offset Hz */
-        tx_nco_hz = arg;
-        return CTL_OK;
-    case 63: /* RESEARCH: NCO update rate Hz */
-        tx_nco_rate = arg;
-        return CTL_OK;
-    case 64: /* RESEARCH: NCO amplitude */
-        tx_nco_amp = arg;
-        return CTL_OK;
-    case 66: /* RESEARCH: clear the state ladder, hold time per state in ms */
-        tx_states_n = 0;
-        tx_hold_ms = arg;
-        return CTL_OK;
-    case 67: /* RESEARCH: append a state */
-        if (tx_states_n >= TX_MAX_STATES)
-            return CTL_BAD_ARGUMENT;
-        tx_states[tx_states_n++] = arg;
-        return CTL_OK;
-    case 68: /* RESEARCH: run the ladder */
-        return radio_tx_ladder(arg & 0x3FFFFFu, arg >> 22, tx_states, tx_states_n, tx_hold_ms, value);
-    case 69: /* RESEARCH: FSK through the PLL word, deviation = NCO offset Hz, toggle rate = NCO rate Hz */
-        return radio_tx_fsk(arg & 0x3FFFFFu, arg >> 22, tx_test_ms, tx_nco_hz, tx_nco_rate, tx_nco_amp, value);
-    case 70: /* RESEARCH: sine-tone FM: tone = NCO offset Hz, update rate = NCO rate Hz, deviation = NCO amplitude Hz */
-        return radio_tx_fm(arg & 0x3FFFFFu, arg >> 22, tx_test_ms, tx_nco_hz, tx_nco_amp, tx_nco_rate, value);
-    case 71: { /* RESEARCH: the next `arg` bytes on the line are audio samples; appended to the buffer in capture banks 0..2.
-                * The banks take 32-bit accesses only (a byte store fills all four lanes), so the bytes are assembled into words. */
-        if (arg == 0 || (arg & 3u) || (tx_audio_len & 3u) || tx_audio_len + arg > TX_AUDIO_MAX)
-            return CTL_BAD_ARGUMENT;
-        volatile uint32_t *dst = (volatile uint32_t *)(TX_AUDIO_BASE + tx_audio_len);
-        for (uint32_t i = 0; i < arg / 4u; i++) {
-            uint32_t word = 0;
-            for (unsigned b = 0; b < 4; b++) {
-                uint32_t start = cpu_cycles();
-                int byte;
-                while ((byte = serial_read()) < 0)
-                    if (cpu_cycles() - start > 480000000u)
-                        return CTL_FAILED; /* 2 s without a byte */
-                word |= (uint32_t)byte << (8 * b);
-            }
-            dst[i] = word;
+#ifdef ESPDR_TX
+    case TX_OP_LO:
+    case TX_OP_RATE:
+    case TX_OP_DRIFT:
+    case TX_OP_LIMIT:
+        return radio_tx_set(op, arg);
+    case TX_OP_BEGIN:
+        tx_pending = false;
+        {
+            uint8_t st = radio_tx_begin(value);
+            tx_pending = st == CTL_OK;
+            return st;
         }
-        tx_audio_len += arg;
-        *value = tx_audio_len;
-        return CTL_OK;
-    }
-    case 72: /* RESEARCH: forget the audio */
-        tx_audio_len = 0;
-        return CTL_OK;
-    case 73: /* RESEARCH: play the audio as FM: update rate = NCO rate Hz, deviation (full scale) = NCO amplitude Hz, up = NCO offset (1/2) */
-        return radio_tx_audio(arg & 0x3FFFFFu, arg >> 22, tx_nco_amp, tx_nco_rate, tx_nco_hz, (const int8_t *)TX_AUDIO_BASE,
-                              tx_audio_len, value);
-    case 74: /* RESEARCH (SSB stage A): gain field; arg = lo kHz | mode << 22 | a << 24; b = NCO amp, c = NCO rate (signed), d = NCO Hz */
-        return radio_tx_gain(arg & 0x3FFFFFu, (arg >> 22) & 3u, arg >> 24, tx_nco_amp, (int32_t)tx_nco_rate, tx_nco_hz, value);
-    case 79: /* RESEARCH: read byte `arg` of the uploaded audio, and the upload length in *value >> 8 */
-        if (arg >= TX_AUDIO_MAX)
-            return CTL_BAD_ARGUMENT;
-        *value = ((((const volatile uint32_t *)TX_AUDIO_BASE)[arg / 4u] >> (8 * (arg & 3u))) & 0xFFu) | (tx_audio_len << 8);
-        return CTL_OK;
-    case 78: /* RESEARCH: play the uploaded (word delta, gain code) pairs as SSB; rate = NCO rate Hz; arg = lo kHz */
-        return radio_tx_ssb(arg & 0x3FFFFFu, tx_nco_rate, (const uint8_t *)TX_AUDIO_BASE, tx_audio_len / 2u, tx_nco_hz,
-                            (int32_t)tx_nco_amp, value);
-    case 75: /* RESEARCH: dump the frontend registers; arg = lo kHz | g << 22 */
-        return radio_tx_regs(arg & 0x3FFFFFu, arg >> 22, value);
-    case 76: /* RESEARCH: read one word of the dump */
-        if (arg >= 25)
-            return CTL_BAD_ARGUMENT;
-        *value = tx_regs[arg];
-        return CTL_OK;
-    case 77: /* RESEARCH: PHY power backoff ladder; arg = lo kHz | g << 22; b0 = NCO amp, step = NCO rate (signed), b1 | hold ms << 16 = NCO Hz */
-        return radio_tx_backoff(arg & 0x3FFFFFu, arg >> 22, (int)tx_nco_amp, (int)(tx_nco_hz & 0xFFFFu), (int32_t)tx_nco_rate,
-                                tx_nco_hz >> 16, value);
-    case 65: /* RESEARCH: like 61 but moving the carrier with the NCO */
-        return radio_tx_nco(arg & 0x3FFFFFu, arg >> 22, tx_test_ms, tx_nco_hz, tx_nco_rate, tx_nco_amp, value);
-    case 61: /* RESEARCH: carrier at (arg & 0x3FFFFF) kHz with test gain (arg >> 22) */
-        return radio_tx_test(arg & 0x3FFFFFu, arg >> 22, tx_test_ms, value);
 #endif
     case ESP_STOP: /* the run, if any, has already ended */
     case ESP_ARG_HIGH: /* kept by the command loop */
@@ -383,6 +326,14 @@ void app_main(void)
         uint8_t status = execute(op, (uint32_t)arg_high << 16 | arg, &value);
         arg_high = op == ESP_ARG_HIGH ? arg : 0;
         reply(op, status, sequence, value);
+#ifdef ESPDR_TX
+        if (tx_pending) {
+            tx_pending = false;
+            uint32_t summary = radio_tx_run();
+            reply(TX_OP_END, CTL_OK, sequence, summary);
+            received = 0;
+        }
+#endif
         last_command = cpu_cycles();
     }
 }
