@@ -135,8 +135,9 @@ def _blocks(args, stop):
     return gen(), (mono if live else None), desc
 
 
-def run(args, out=sys.stderr):
+def run(args, out=None):
     import numpy as np
+    out = out or sys.stderr
     if args.selftest:
         return selftest()
     if args.list_devices:

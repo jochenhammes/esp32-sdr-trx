@@ -36,7 +36,7 @@ ESP_STAT_STATUS, ESP_STAT_DETAIL, ESP_STAT_FAIL_LANE = 0, 1, 2
 ESP_STAT_UNITS0, ESP_STAT_UNITS1 = 3, 4
 ESP_STAT_SERVICE_MAX0, ESP_STAT_SERVICE_MAX1, ESP_STAT_RADIO = 11, 12, 13
 NB_STAT_DROPPED, NB_STAT_FIFO_PEAK, NB_STAT_SLIPS = 32, 33, 34
-CTL_OK, CTL_UNKNOWN_OP = 0, 1
+CTL_OK, CTL_UNKNOWN_OP, CTL_BAD_ARGUMENT, CTL_BUSY, CTL_NOT_READY, CTL_RUN_FAILED, CTL_FAILED = 0, 1, 2, 3, 4, 5, 6
 FIRMWARE_ID = 0x49515306  # CTL_ESP_FIRMWARE_ID in protocol/control.h
 FAIL_NAMES = {1: "bank ownership changed", 2: "late poll", 3: "late switch", 4: "unit end not found",
               5: "unit start not found", 6: "bad unit length", 7: "bank still busy (DSP too slow)",
