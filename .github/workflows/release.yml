@@ -1,0 +1,66 @@
+name: Release
+
+# Push a tag such as v1.0.0 to build the images and the wheel and publish them with their checksums.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.5
+    steps:
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Build
+        run: |
+          . "$IDF_PATH/export.sh"
+          make -C firmware images ESPTOOL="python -m esptool"
+          mkdir out
+          cp firmware/build-rx/iq-source.bin out/esp32-sdr-trx-rx.bin
+          cp firmware/build-tx/iq-source.bin out/esp32-sdr-trx-tx.bin
+          cp firmware/flash/bootloader.bin firmware/flash/partition-table.bin out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: images
+          path: out
+
+  wheel:
+    needs: images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: images
+          path: out
+      - name: Build the wheel with the images inside
+        run: |
+          mkdir -p src/espdr/images
+          cp out/esp32-sdr-trx-rx.bin src/espdr/images/rx.bin
+          cp out/esp32-sdr-trx-tx.bin src/espdr/images/tx.bin
+          cp out/bootloader.bin out/partition-table.bin src/espdr/images/
+          # the version is the tag without the v
+          sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#v}\"/" pyproject.toml
+          sed -i "s/^__version__ = .*/__version__ = \"${GITHUB_REF_NAME#v}\"/" src/espdr/__init__.py
+          pip install build
+          python -m build
+          pip install dist/*.whl
+          espdr-rx --selftest
+          espdr-tx --selftest
+          cd dist && sha256sum * > ../out/SHA256SUMS-wheel
+          cd ../out && sha256sum esp32-sdr-trx-*.bin bootloader.bin partition-table.bin > SHA256SUMS && cat SHA256SUMS-wheel >> SHA256SUMS && rm SHA256SUMS-wheel
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+            out/esp32-sdr-trx-rx.bin
+            out/esp32-sdr-trx-tx.bin
+            out/SHA256SUMS
+          generate_release_notes: true

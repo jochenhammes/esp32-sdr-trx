@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e '.[dev]'
+      - name: Unit tests (signal processing, protocol against a simulated chip, command lines)
+        run: python -m pytest -q tests
+      - name: The on-chip decimator is bit-exact against an integer model
+        run: python firmware/tools/dsp_selftest.py
+      - name: Command line self-tests
+        run: |
+          espdr-rx --selftest
+          espdr-tx --selftest
+          espdr-rx -h > /dev/null
+          espdr-tx -h > /dev/null
+
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.5
+    steps:
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Build the receiver and the transmitter image
+        run: |
+          . "$IDF_PATH/export.sh"
+          make -C firmware images ESPTOOL="python -m esptool"
+          sha256sum firmware/build-rx/iq-source.bin firmware/build-tx/iq-source.bin | tee SHA256SUMS
+          # both images must also boot from flash: a flash-mapped data segment with the app descriptor first, and a code segment
+          for d in rx tx; do
+            xtensa-esp32s3-elf-objdump -h firmware/build-$d/iq-source.elf > sections-$d.txt
+            grep -qE "\.flash\.rodata .* 3c000020 " sections-$d.txt && grep -qE "\.flash\.text .* 42000020 " sections-$d.txt
+          done
+      - name: The receiver image has no transmit code, the transmitter image has
+        run: |
+          . "$IDF_PATH/export.sh"
+          if xtensa-esp32s3-elf-nm firmware/build-rx/iq-source.elf | grep -q "radio_tx_"; then echo "the receiver image contains transmit code"; exit 1; fi
+          xtensa-esp32s3-elf-nm firmware/build-tx/iq-source.elf | grep -q radio_tx_run
+      - name: Memory budget (the transmit code must keep fitting beside the decimator)
+        run: |
+          . "$IDF_PATH/export.sh"
+          for d in rx tx; do xtensa-esp32s3-elf-size -A firmware/build-$d/iq-source.elf | grep -E "^\.(text|core1_text|data|bss|stacks) " | tee size-$d.txt; done
+          # .text must stay below the transmit kernel at 0x4038F000 (61440 bytes from 0x40380000), .data below 8192
+          awk '$1==".text" && $2 > 61000 {exit 1}' size-tx.txt
+          awk '$1==".data" && $2 > 8000 {exit 1}' size-tx.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: images
+          path: |
+            firmware/build-rx/iq-source.bin
+            firmware/build-tx/iq-source.bin
+            SHA256SUMS
+
+  package:
+    needs: firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: images
+          path: images
+      - name: Stage the images and build the wheel
+        run: |
+          mkdir -p src/espdr/images
+          cp images/firmware/build-rx/iq-source.bin src/espdr/images/rx.bin
+          cp images/firmware/build-tx/iq-source.bin src/espdr/images/tx.bin
+          cp firmware/flash/bootloader.bin firmware/flash/partition-table.bin src/espdr/images/
+          pip install build
+          python -m build --wheel
+      - name: Install the wheel into a clean environment and run both commands
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install dist/*.whl
+          /tmp/clean/bin/espdr-rx -h > /dev/null
+          /tmp/clean/bin/espdr-tx -h > /dev/null
+          /tmp/clean/bin/espdr-rx --selftest
+          /tmp/clean/bin/espdr-tx --selftest
+          /tmp/clean/bin/python - <<'PY'
+          from espdr import board
+          for kind in ("rx", "tx"):
+              print(kind, board.image_path(kind))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
