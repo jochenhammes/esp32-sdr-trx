@@ -193,10 +193,12 @@ def run(args, out=None):
 
     q = queue.Queue(maxsize=64)
     err = []
+    level = [-120.0]                                     # input level in dBFS of the last audio block, shown in the progress line
 
     def producer():
         try:
             for b in blocks:
+                level[0] = 20 * np.log10(max(float(np.sqrt(np.mean(np.square(b)))), 1e-6))
                 q.put(mod.process(b))
             for _ in range(10):                                  # flush the filters with silence
                 q.put(mod.process(np.zeros(160)))
@@ -209,6 +211,7 @@ def run(args, out=None):
     th.start()
     started = time.monotonic()
     last_print = [0.0]
+    warned = [False]
     trim = [0.0]
 
     def on_status(ev):
@@ -219,8 +222,12 @@ def run(args, out=None):
         now = time.monotonic()
         if not args.quiet and now - last_print[0] > 0.5:
             last_print[0] = now
-            print(f"\r  on air {now - started:6.1f} s   buffer {ev['fill'] * 1000 // args.update_rate:4d} ms   underruns {ev['underruns']}   late {ev['late']}   ",
+            print(f"\r  on air {now - started:6.1f} s   audio {level[0]:6.1f} dBFS   buffer {ev['fill'] * 1000 // args.update_rate:4d} ms   underruns {ev['underruns']}   late {ev['late']}   ",
                   end="", file=out, flush=True)
+            if level[0] < -70 and now - started > 3 and not warned[0]:
+                warned[0] = True
+                print("\nwarning: almost no audio arrives (input level below -70 dBFS). Is the microphone muted or the wrong input chosen? "
+                      "See --list-devices and -i soundcard:NUMBER.", file=out)
         if args.duration and now - started >= args.duration:
             stop.set()
 
