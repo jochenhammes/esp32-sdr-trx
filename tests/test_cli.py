@@ -60,3 +60,12 @@ def test_rx_selftest_runs():
 
 def test_tx_selftest_runs():
     assert cli_tx.main(["--selftest"]) == 0
+
+
+def test_the_command_reference_matches_the_help_text():
+    import pathlib
+    import subprocess
+    import sys
+    root = pathlib.Path(__file__).resolve().parents[1]
+    r = subprocess.run([sys.executable, str(root / "scripts" / "gen-reference.py"), "--check"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout

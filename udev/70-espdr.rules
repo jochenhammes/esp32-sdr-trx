@@ -1,0 +1,5 @@
+# ESP32-S3 running the eSpDR espdr firmware (native USB Serial/JTAG port, 303a:1001).
+# - keeps ModemManager from probing the port with AT commands (any byte it sends would stop a run)
+# - gives the logged-in desktop user access without joining the "dialout" group
+# Install:  sudo cp udev/70-espdr.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", ENV{ID_MM_DEVICE_IGNORE}="1", TAG+="uaccess"

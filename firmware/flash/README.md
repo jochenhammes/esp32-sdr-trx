@@ -8,9 +8,9 @@ files are Espressif's standard second-stage bootloader and a standard partition 
 |---|---|---|
 | `bootloader.bin` | `0x0` | ESP-IDF second-stage bootloader (log level *info*, 80 MHz, DIO) |
 | `partition-table.bin` | `0x8000` | the default single-application table: `nvs`, `phy_init`, `factory` at `0x10000` |
-| *(the narrowband image)* | `0x10000` | `iq-source.bin` from `make NARROWBAND=1`, or `iq-source-nb.bin` from a release |
+| *(the narrowband image)* | `0x10000` | the receiver image (`rx.bin` in the package, `firmware/build-rx/iq-source.bin` from `make -C firmware`) |
 
-`python host/python/espdr_load.py --flash iq-source-nb.bin` writes all three. It **overwrites** the board's flash.
+`espdr-rx --flash` writes all three (with the receiver image of the package). It **overwrites** the board's flash.
 
 ## Where they come from
 
