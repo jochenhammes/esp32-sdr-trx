@@ -8,7 +8,7 @@ This page assumes nothing: not a virtual environment, not `pipx`. Linux is the t
 * An ESP32-S3 board with **two USB ports** (see [the receiver guide](receiver.md#requirements)) and a USB cable for each. Connect both.
 * **Python 3.10 or newer.** Check with `python3 --version`. (Debian/Ubuntu: `sudo apt install python3 python3-venv python3-pip`;
   Fedora: `sudo dnf install python3`; Arch: `sudo pacman -S python`.)
-* The **wheel** of the latest [release](https://github.com/jochenhammes/esp32-sdr-trx/releases/latest): the file called
+* The **wheel** of a [release](https://github.com/jochenhammes/esp32-sdr-trx/releases) (take the newest): the file called
   `esp32_sdr_trx-X.Y.Z-py3-none-any.whl`. It contains the tools and the firmware images; there is nothing to build.
 
 ## The easy way: the install script
