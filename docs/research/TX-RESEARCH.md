@@ -369,3 +369,44 @@ An SRAM-fed path, if it exists, would have to be driven by direct register acces
 
 Next steps (need hardware): compare the S3 register space around `0x6001Cxxx` and `0x6000Axxx` with the C6 `set_dump_mode` registers; dump registers before and
 after a normal `WifiTxStart` and diff them; ask the commenter which chip and registers they use.
+
+## Stage 5: `dactrig`, a DAC playback engine fed from SRAM (static analysis, hardware test pending)
+
+Result of the first pass of the disassembly plan. The register map from the PHY libraries is in [REGISTER-MAP.md](REGISTER-MAP.md). Static only,
+**nothing here is measured yet**; every bit meaning below is inferred from instruction sequences.
+
+`libphy.a`/`librftest.a` of the S3 contain `mac_common:adctrig` and **`mac_common:dactrig`**. `adctrig` is the ADC dump engine that eSpDR already uses
+(`0x60033D5C` run/length, `0x60033D60` write index, `0x600C101C` bank select). `dactrig` is its counterpart for the **DAC**, driven through a new register, **`0x60033D64`**.
+The symbol exists on S2, S3, C3, C6, C5, C2 and H2 (ESP32 has only `adctrig`), which fits the claim that other ESP32-family chips have arbitrary I/Q TX from SRAM.
+
+What `dactrig(a2, a3, a4, a5)` does on the S3, in order:
+
+1. `0x60033D64 &= 0x7FFFFFFF` (bit 31 cleared: stop/idle).
+2. Fills `0x10000` words at **`0x3FCD0000`** (internal SRAM, the same area `adctrig` uses for its dump bank) with a ramp, `(i >> 3) + 0x100`.
+   (The loop stores a 32-bit word at base + i with i counting in bytes; if that is really what the library does, it is test code that was never run on the S3,
+   because an unaligned `s32i` traps on Xtensa. The C6 build contains the same loop. Do not read the exact stride as format information.)
+3. Programs `0x60033D64`:
+   * bits 13:0 = `a2` (length/ring size in samples or words),
+   * bit 15 = `0` if `a3 == 1`, else `1` (mode select),
+   * bit 19 = `1` if `a4 != 0` (option, perhaps repeat/loop),
+   * bits 27:20 = low 8 bits of `a2` (second field, meaning unknown),
+   * bit 31 = `1` (start).
+4. Polls `0x60033D64` until **bit 18** is set (done or wrapped).
+5. `ets_delay_us(10000)`, then writes `0` to `0x60033D5C` (stops the ADC dump that the loopback test ran alongside), and prints the arguments with `phy_printf`.
+
+Reading: a DMA-like engine reads sample words from SRAM and feeds the DAC (TX baseband), in the style of the RX dump engine, started by one bit. That is the "samples read
+right from SRAM" the commenter described. What is **not** known: the SRAM base address register (the library only fills `0x3FCD0000`, so it may be a fixed base or set elsewhere,
+for example by `0x600C101C` or `0x60033D84`, which `tx_a_frame` touches), the sample format (I and Q packing, bit width), the sample rate (probably the DAC clock, 80 or 160 MHz,
+with a divider in bits 27:20), and what routes the DAC output to the RF transmit chain (the library calls `dactrig` only from a test console, there is no caller in the library, so the
+transmit chain has to be put in a mode like `txcal_debuge_mode`/`start_tx_tone_step(1,0,g,0,0,0)` first, as in Stage 2).
+
+On C6, `dactrig` is reduced to the ramp fill (`0x40840000`) and the print: the register programming is gone from that build, so the S3 version is the better reference.
+
+### Next: hardware tests (in order)
+
+1. Reproduce Stage 2 (carrier from `radio_tx_test`) and then, with the carrier running, call the `dactrig` sequence from our firmware with a constant buffer at `0x3FCD0000`
+   (first all words `0`, then a constant, then the ramp from the library). Measure with the PlutoSDR whether the carrier changes (level, phase, offset).
+2. Replace the ramp with a sine at a known frequency (words as I/Q pairs, then as one real value) and look for a line that moves in the spectrum when the pattern frequency changes.
+   Try both word formats and both values of bit 15.
+3. Dump `0x60033D5C..0x60033D90` before and after `dactrig` to find the registers it leaves changed (base, rate), and diff against an idle snapshot.
+4. If the DAC output only goes to the loopback path (calibration), look for the TX mux: bit 26 of `0x60006000`, bit 10 of `0x600061E4`, `txcal_debuge_mode()`, `force_txon_mode`.
