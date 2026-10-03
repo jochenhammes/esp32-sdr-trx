@@ -54,17 +54,13 @@ jobs:
           pip install dist/*.whl
           espdr-rx --selftest
           espdr-tx --selftest
-          cd dist && sha256sum * > ../out/SHA256SUMS-wheel
-          cd ../out && sha256sum esp32-sdr-trx-*.bin bootloader.bin partition-table.bin > SHA256SUMS && cat SHA256SUMS-wheel >> SHA256SUMS && rm SHA256SUMS-wheel
+          # everything that goes on the release page, with checksums of exactly those files
+          mkdir release
+          cp dist/* out/esp32-sdr-trx-rx.bin out/esp32-sdr-trx-tx.bin scripts/install-linux.sh udev/70-espdr.rules release/
+          (cd release && sha256sum * > SHA256SUMS && cat SHA256SUMS && sha256sum -c SHA256SUMS)
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*
-            out/esp32-sdr-trx-rx.bin
-            out/esp32-sdr-trx-tx.bin
-            out/SHA256SUMS
-            scripts/install-linux.sh
-            udev/70-espdr.rules
+          files: release/*
           body_path: .github/release-notes.md
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
