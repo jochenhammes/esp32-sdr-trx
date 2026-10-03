@@ -301,6 +301,7 @@ def selftest():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    board.VERBOSE = bool(args.verbose)
     try:
         return run(args)
     except (board.BoardError, txlink.TxError, audio.AudioError, nb.ProtocolError) as e:

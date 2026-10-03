@@ -79,6 +79,7 @@ def run(args):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    board.VERBOSE = bool(args.verbose)
     try:
         return run(args)
     except (board.BoardError, nb.ProtocolError) as e:

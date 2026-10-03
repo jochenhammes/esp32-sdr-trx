@@ -102,15 +102,24 @@ def image_path(kind, override=None):
                      f"install a release of esp32-sdr-trx, or build one with `make -C firmware{' TX=1' if kind == TX else ''}`")
 
 
+VERBOSE = False     # set by the command lines' -v: show esptool's own output
+
+
 def _esptool(args, what):
     cmd = [sys.executable, "-m", "esptool", "--chip", "esp32s3"] + args
     try:
-        rc = subprocess.call(cmd)
+        if VERBOSE:
+            rc = subprocess.call(cmd)
+            out = ""
+        else:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            rc, out = proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except OSError as e:
         raise BoardError(f"cannot run esptool: {e}")
     if rc != 0:
-        raise BoardError(f"esptool failed while {what} (see above). Check the cable and the port, and that no other program "
-                         f"(a terminal, ModemManager, another espdr tool) holds it.")
+        tail = "\n".join(out.strip().splitlines()[-8:])
+        raise BoardError(f"esptool failed while {what}:\n{tail}\nCheck the cable and the port, and that no other program "
+                         f"(a terminal, ModemManager, another espdr tool) holds it. Run again with -v for the full output.")
 
 
 def _wait_native(timeout=10.0):
@@ -138,7 +147,7 @@ def load_ram(kind, bridge=None, native=False, image=None, log=print):
                              "second USB-C port) as well, or put a board with only the native port in download mode (hold BOOT, "
                              "tap RESET) and use --native.")
         before = "default-reset"
-    log(f"loading the {'transmitter' if kind == TX else 'receiver'} firmware into RAM through {port} ...")
+    log(f"loading the {'transmitter' if kind == TX else 'receiver'} firmware into RAM through {port} (about 8 s) ...")
     _esptool(["--port", port, "--before", before, "--after", "no-reset", "--no-stub", "load-ram", str(path)], "loading the image")
     native_port = _wait_native()
     if not native_port:
