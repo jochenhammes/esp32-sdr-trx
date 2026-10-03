@@ -1,7 +1,7 @@
 # How it works inside
 
 For users, see [receiver.md](receiver.md). This page is for people who want to change the firmware or understand
-the numbers. The radio side (16 Msps dump, banks, link timing) is described in [RADIO.md](RADIO.md) and the [original README](../README-eSpDR.md);
+the numbers. The radio side (16 Msps dump, banks, link timing) is described in [RADIO.md upstream](https://github.com/h0m3us3r/eSpDR/blob/main/docs/RADIO.md) and the [original README](https://github.com/h0m3us3r/eSpDR);
 here only what the narrowband mode adds.
 
 ## The time budget
