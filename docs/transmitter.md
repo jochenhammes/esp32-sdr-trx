@@ -1,7 +1,7 @@
 # The transmitter: FM and SSB voice from an ESP32-S3
 
-`espdr-tx` sends narrowband FM or single-sideband voice from an ESP32-S3 board on the 13 cm band (2320 to 2450 MHz). The chip has no I/Q
-input; what it has is a Wi-Fi test tone that can be steered, and that is enough. This page is the user guide. The command line reference
+`espdr-tx` sends narrowband FM or single-sideband voice from an ESP32-S3 board on the 13 cm band (2320 to 2450 MHz). No I/Q
+transmit input was found (an open question, see the research notes); what it has is a Wi-Fi test tone that can be steered, and that is enough. This page is the user guide. The command line reference
 is [espdr-tx.md](espdr-tx.md) (and `espdr-tx -h`), how it works is in [internals.md](internals.md), and every measurement is in
 [the research notes](research/TX-RESEARCH.md).
 

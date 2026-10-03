@@ -8,7 +8,7 @@ that does not change who is responsible. Everything below was measured with a Pl
 
 ## In short
 
-The ESP32-S3 has no I/Q transmit input, but its PHY library's test-tone mode gives a carrier that can be moved in **frequency** through the
+No I/Q transmit input of the ESP32-S3 was found (the test-tone registers are not one, and a possible SRAM-fed path on other ESP32 chips is unexplored, see Stage 4), but its PHY library's test-tone mode gives a carrier that can be moved in **frequency** through the
 RF PLL's sigma-delta word (459 Hz steps, 40 kHz updates) and in **amplitude** through a gain code (0.28 dB per step, 18 dB range, 20 kHz fast).
 Together that is polar modulation, and it carries:
 
@@ -350,3 +350,22 @@ the cores do not compete for instruction fetches) and the work RAM needs a small
 * A combined image remains possible later as a build option (`TX=1` for the receiver plus the transmit ops in the core-1 bank) if there is a
   reason that outweighs the points above, for example a transmit and receive program that keeps one USB connection open.
 
+
+## Stage 4: searching for an SRAM I/Q transmit path (static analysis)
+
+Prompted by a comment that other ESP32-family chips have arbitrary I/Q TX with samples read from SRAM. Source: `espressif/esp-phy-lib`
+(`libphy.a`, `librftest.a`, `libbttestmode.a` for esp32, esp32s2, esp32s3, esp32c5, esp32c6), disassembled with the ESP toolchain's objdump (Xtensa) and
+binutils (RISC-V). Static only, nothing measured on hardware. **Result: no SRAM I/Q transmit path in the libraries; not ruled out in the hardware.**
+
+* **esp32c5 / esp32c6:** `fedump_wr_txmem`, `fedump_rd_txmem` and `fedump_rd_rxmem` exist ("front-end dump", TX memory writable), but all three are empty
+  stubs (`ret`). That suggests the hardware has the feature on these chips and the library does not use it.
+* **esp32c6 `loop_dump_test`:** sends a normal Wi-Fi packet (`WifiTxStart_org`), triggers `adctrig` and reads the RX dump. A loopback with a real packet, not
+  free I/Q. `set_dump_mode` writes `0x600A0958` and `0x600A70B8`.
+* **esp32 / esp32s2:** `clear_txdumpmem`, `get_txdumpaddr` are a capture of the transmit signal into RAM, an output not an input.
+* **esp32s3:** no `fedump_*`. `phy_chan_dump_cfg` writes `0x6001CD0C` (RX channel dump configuration, probably what eSpDR uses). `set_pbus_mem`,
+  `tx_pbus_set` program the analog bus, not samples. Bit 26 of `0x60006000` and bit 10 of `0x600061E4` are only touched by `start_tx_tone_step` and `stop_tx_tone`.
+
+An SRAM-fed path, if it exists, would have to be driven by direct register access (as the receive dump is), so no library would show it.
+
+Next steps (need hardware): compare the S3 register space around `0x6001Cxxx` and `0x6000Axxx` with the C6 `set_dump_mode` registers; dump registers before and
+after a normal `WifiTxStart` and diff them; ask the commenter which chip and registers they use.

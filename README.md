@@ -12,7 +12,7 @@ document. This project uses both, on a plain dev board with a USB cable and no F
   `rtl_tcp` server, so **SDR++**, GNU Radio and anything else that speaks `rtl_tcp` can use it.
 * **Transmit** (`espdr-tx`): narrowband **FM** and **SSB (USB/LSB)** voice in the 13 cm amateur band (2320 to 2450 MHz), from a WAV file, a pipe or
   a sound card. It is an *experiment* that works: the chip's carrier is steered in frequency and amplitude by software (polar modulation),
-  because it has no I/Q input. Transmitting takes an amateur radio licence; read [the transmitter guide](docs/transmitter.md) first.
+  because no I/Q transmit input was found (see [the research notes](docs/research/TX-RESEARCH.md#stage-4-searching-for-an-sram-iq-transmit-path-static-analysis)). Transmitting takes an amateur radio licence; read [the transmitter guide](docs/transmitter.md) first.
 
 | | Receiver | Transmitter |
 |---|---|---|
