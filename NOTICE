@@ -1,0 +1,15 @@
+esp32-sdr-trx
+=============
+
+This project is built on eSpDR by h0m3us3r (https://github.com/h0m3us3r/eSpDR), published under the Zero-Clause BSD licence (0BSD).
+eSpDR found how to read the ESP32-S3's undocumented Wi-Fi I/Q dump path and wrote the firmware around it: the radio bring-up, the
+LO tuning (including the 5/6 conversion mode), the capture engine and the control protocol. The firmware in `firmware/` is that code with
+changes; it started from upstream commit f279bf8 and went through the fork https://github.com/jochenhammes/eSpDR (branches
+`narrowband`, `tx-research`; the research is kept there and in the tag `tx-research-final`).
+
+What this project adds: the on-chip decimator that makes a 250 or 333 ksps stream out of the 16 Msps dump (no FPGA), the USB stream, the
+flash boot, the rtl_tcp bridge, the experimental transmitter (frequency and amplitude steering of the PHY's test tone, FM and SSB voice),
+the host tools `espdr-rx` and `espdr-tx`, and their documentation. Most of the code and the documentation was written with Claude
+(Anthropic) as the coding assistant; every number in the documentation was measured.
+
+The vendor PHY library (libphy.a) of ESP-IDF is linked at build time from an ESP-IDF v5.5 installation and is not part of this repository.

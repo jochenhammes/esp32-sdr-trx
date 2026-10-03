@@ -120,7 +120,7 @@ LINKER_SCRIPTS := -T $(MEMORY_LD) -T $(ROM_LD)/esp32s3.rom.ld -T $(BUILD)/rom-li
 	-T $(IDF)/soc/esp32s3/ld/esp32s3.peripherals.ld
 LIBRARIES := $(IDF)/esp_phy/lib/esp32s3/libphy.a -lgcc
 
-.PHONY: all clean
+.PHONY: all clean images
 .DEFAULT_GOAL := all
 all: $(BUILD)/iq-source.bin
 
@@ -168,3 +168,8 @@ $(BUILD) $(BUILD)/sdk:
 
 clean:
 	rm -rf $(BUILD)
+
+# Both images in one go: the receiver (build-rx) and the one with the transmitter (build-tx). Used by CI and scripts/stage-images.sh.
+images:
+	$(MAKE) TX=0 NARROWBAND=1 BUILD=build-rx
+	$(MAKE) TX=1 NARROWBAND=1 BUILD=build-tx
