@@ -65,4 +65,6 @@ jobs:
             out/SHA256SUMS
             scripts/install-linux.sh
             udev/70-espdr.rules
+          body_path: .github/release-notes.md
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
