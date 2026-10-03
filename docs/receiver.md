@@ -36,7 +36,7 @@ Tested on: a generic *ESP32-S3-WROOM-1 development board with two USB-C ports* (
 * An ESP32-S3 board with **two USB ports** (UART bridge + native USB). This is what lets the tools reset the chip into its loader without buttons.
   A board with only the native port should work too (`--native`, with BOOT held and RESET tapped by hand each time), but that has not been tried.
 * Linux (tested). The tools use `pyserial` and `esptool` and should run elsewhere, but nothing else has been tried.
-* Python 3.10 or newer, `pipx` or `pip` ([README](../README.md#install)).
+* Python 3.10 or newer; how to install the tools step by step: [install.md](install.md).
 * Optional: an antenna (the board's PCB antenna is enough for strong nearby signals), SDR++ or GNU Radio.
 
 On Linux install the udev rule once. It keeps ModemManager from probing the board's port (any byte it sends would stop a run) and lets you use the

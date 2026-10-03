@@ -63,4 +63,6 @@ jobs:
             out/esp32-sdr-trx-rx.bin
             out/esp32-sdr-trx-tx.bin
             out/SHA256SUMS
+            scripts/install-linux.sh
+            udev/70-espdr.rules
           generate_release_notes: true

@@ -96,6 +96,12 @@ jobs:
           for kind in ("rx", "tx"):
               print(kind, board.image_path(kind))
           PY
+      - name: The install script works (clean prefix, no sudo) and the commands run without activating the venv
+        run: |
+          ESPDR_VENV=/tmp/espdr-venv ESPDR_BIN=/tmp/espdr-bin bash scripts/install-linux.sh dist/*.whl --no-udev
+          /tmp/espdr-bin/espdr-tx --selftest
+          ESPDR_VENV=/tmp/espdr-venv ESPDR_BIN=/tmp/espdr-bin bash scripts/install-linux.sh --uninstall
+          test ! -e /tmp/espdr-bin/espdr-rx
       - uses: actions/upload-artifact@v4
         with:
           name: wheel

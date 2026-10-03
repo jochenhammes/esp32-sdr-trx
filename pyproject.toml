@@ -23,4 +23,4 @@ espdr-tx = "espdr.cli_tx:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-espdr = ["images/*.bin"]
+espdr = ["images/*.bin", "udev/*.rules"]

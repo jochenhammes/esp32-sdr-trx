@@ -25,20 +25,18 @@ document. This project uses both, on a plain dev board with a USB cable and no F
 
 ## Install
 
-You need an ESP32-S3 board **with two USB ports** (the second one is a USB-UART bridge that lets the tools load the firmware without
-buttons), a USB cable for each, Linux, and Python 3.10 or newer.
+You need an ESP32-S3 board **with two USB ports** (the second one is a USB-UART bridge that lets the tools load the firmware without buttons), a USB
+cable for each, Linux, and Python 3.10 or newer. Download the wheel `esp32_sdr_trx-X.Y.Z-py3-none-any.whl` and `install-linux.sh` from the
+[latest release](https://github.com/jochenhammes/esp32-sdr-trx/releases/latest), then:
 
 ```sh
-pipx install https://github.com/jochenhammes/esp32-sdr-trx/releases/latest/download/esp32_sdr_trx-X.Y.Z-py3-none-any.whl
-# for the sound card as a transmit source:
-pipx inject esp32-sdr-trx sounddevice
+chmod +x install-linux.sh                      # downloads have no execute right yet
+./install-linux.sh esp32_sdr_trx-X.Y.Z-py3-none-any.whl --audio     # --audio: a sound card as the transmit source
 ```
 
-(Take the wheel's exact name from the [latest release](https://github.com/jochenhammes/esp32-sdr-trx/releases/latest). `pip install` into a virtual
-environment works as well.) The package carries the firmware images; there is nothing to build.
-
-Linux: install the udev rule once so that ModemManager leaves the board alone and you may use it without `dialout`:
-`sudo cp udev/70-espdr.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger`.
+That creates a virtual environment of its own, links `espdr-rx` and `espdr-tx` into `~/.local/bin` and offers the udev rule. The package carries the firmware
+images; there is nothing to build. **[docs/install.md](docs/install.md)** explains every step, the manual way with `python3 -m venv`, `pipx`, the udev
+rule, execute rights and how to remove it.
 
 ## Use
 
@@ -59,6 +57,7 @@ flash unless you ask (`espdr-rx --flash`). `-h` explains every option and shows 
 
 | | |
 |---|---|
+| [Installation](docs/install.md) | step by step: venv, execute rights, `pipx`, the udev rule, removal |
 | [Receiver guide](docs/receiver.md) | requirements, first run, SDR++, GNU Radio, gain, frequency accuracy, limits, troubleshooting |
 | [Transmitter guide](docs/transmitter.md) | **licence and safety**, modes, power, tuning your receiver, sources, measured performance, limits |
 | [espdr-rx](docs/espdr-rx.md), [espdr-tx](docs/espdr-tx.md) | command line reference (also `-h`) |

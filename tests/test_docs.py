@@ -14,3 +14,7 @@ def test_markdown_links_resolve():
             if not (md.parent / target).exists():
                 bad.append(f"{md.relative_to(ROOT)} -> {target}")
     assert not bad, "\n".join(bad)
+
+
+def test_the_two_copies_of_the_udev_rule_are_identical():
+    assert (ROOT / "udev" / "70-espdr.rules").read_text() == (ROOT / "src" / "espdr" / "udev" / "70-espdr.rules").read_text()
