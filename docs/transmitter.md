@@ -83,7 +83,7 @@ says how far off the tones are; change `-f` by a few kHz then.
 The transmitter is not keyed off between the characters: it sends the mark tone for a second before the text and 0.2 s after it, and the carrier is switched off at the end. The text goes out
 as US Baudot with letters and figures shifts (a space returns to letters), 1 start bit, 5 data bits, 1.5 stop bits; letters are sent as capitals and what the table lacks as `?`.
 In `--text` the typed characters `\r` and `\n` are sent as carriage return and line feed; `--text-file` (`-` for stdin) turns line ends into CR LF. The steps between the tones are
-rounded over 0.2 bit (`--edge`; `0` makes abrupt steps) to keep the occupied bandwidth down. **The tool adds no call sign or identification: put yours in the text.** The audio options, `--deviation`,
+rounded over 0.2 bit (`--edge`; `0` makes abrupt steps; the measurements below show no difference in the spectrum). Start the text with a few `RY` so that a decoder with automatic tuning has the two tones to lock on: the first seconds of a transmission can be lost. **The tool adds no call sign or identification: put yours in the text.** The audio options, `--deviation`,
 `--carrier` and `--duration` do not apply to RTTY.
 
 ## Power
@@ -118,6 +118,9 @@ muted microphone or the wrong input. A sound card's clock differs slightly from 
 | Stop | the tool killed mid-transmission: carrier off 0.54 s later (buffer 190 ms plus the 500 ms watchdog) |
 | FM voice | a 5.3 s recording sent, deviation 2073 Hz at the 99th percentile (2087 Hz in the input), understood |
 | SSB voice | 20 s looped, understood; two-tone figures above |
+| RTTY spectrum | 45.45 baud, 170 Hz shift, PlutoSDR 50 cm away: 99 % of the power within ±234 Hz of the strongest tone, the line 67 dB above the receiver noise. The quantisation of the PLL steps leaves a pedestal around the tones: -69 dBc/Hz 1 to 2 kHz from the line, -74 at 2 to 5, -79 at 5 to 10, -83 at 10 to 20, -91 at 20 to 50, -93 at 50 to 100 kHz (all 1 to 100 kHz together: -29 dB against the tones; -22 dB at 100 baud with 850 Hz shift). `--edge 0` and `--edge 0.2` gave the same spectrum |
+| RTTY decoded | Our own decoder read the PlutoSDR recordings without an error: 45.45 baud / 170 Hz, 50 baud / 170 Hz reversed, 75 baud / 425 Hz, 100 baud / 850 Hz, with letters, figures and punctuation. The RTTY receiver of pluto-tx (`pluto-cli rx ssb --digimode rtty`, live, PlutoSDR) decoded the transmissions too: the whole text at 75 baud / 425 Hz, and the text after the first two to three seconds at 45.45 baud / 170 Hz, also reversed (`--reverse` here, `--rtty-reverse` there). Its AFC needs those seconds to lock; the recordings fed through its receive chain with the filter centred on the signal decoded without errors, and the chain fails when the centre is 80 Hz off (half the shift) |
+| RTTY frequency | after `--ppm` was set the tones were within a few tens of Hz of the wanted ones; the board's frequency kept sinking by 30 to 40 Hz per minute during the first ten minutes of repeated transmissions (it warms up), so set `--ppm` after a warm-up |
 
 ## Limits
 
