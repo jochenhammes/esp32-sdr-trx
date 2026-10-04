@@ -112,6 +112,10 @@ class SimTx:
             p["drift"] = v
         elif op == tl.TX_OP_TEMP and self.flags & 2:
             self._resp(op, 0, (arg << 24) | int(16 * (42.0 + 27.88 * (arg - 2) + 20.52) / 0.4386), seq)
+        elif op == tl.TX_OP_RANGE and self.flags & 2:
+            ok = 44 <= arg <= 90
+            p["range"] = arg if ok else p.get("range", 44)
+            self._resp(op, 0 if ok else nb.CTL_BAD_ARGUMENT, 0, seq)
         elif op == tl.TX_OP_LIMIT and self.flags & 2:
             ok = 1 <= arg <= 3600
             p["limit"] = arg if ok else p["limit"]
@@ -119,7 +123,8 @@ class SimTx:
         elif op == tl.TX_OP_BEGIN and self.flags & 2:
             word = tl.lo_word(p["lo"]) if p["lo"] else 0
             low = word & 0xFF
-            if not p["lo"] or low < tl.TX_LOW_MARGIN or low > 255 - tl.TX_LOW_MARGIN:
+            margin = p.get("range", 44) + 4
+            if not p["lo"] or low < margin or low > 255 - margin:
                 self._resp(op, nb.CTL_BAD_ARGUMENT, word, seq)
                 return
             self._resp(op, 0, word, seq)

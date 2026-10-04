@@ -5,12 +5,13 @@ Transmitter: FM and SSB voice on 13 cm from a WAV file, a pipe or a sound card, 
 This page is generated from `espdr-tx -h` (`scripts/gen-reference.py`); the text below is exactly what the command prints.
 
 ```text
-usage: espdr-tx [-h] [-V] [-f MHZ] [-m {fm,usb,lsb,rtty}] [-i SOURCE] [--test-tone HZ]
+usage: espdr-tx [-h] [-V] [-f MHZ] [-m {fm,usb,lsb,rtty,lora}] [-i SOURCE] [--test-tone HZ]
                 [--list-devices] [--rate HZ] [--channels N] [--format {f32le,s16le,u8}] [--loop]
                 [--gain DB] [--no-agc] [--power DB] [--ppm PPM] [--deviation HZ] [--no-preemph]
                 [--carrier FRACTION] [--ssb-delay UPDATES] [--text TEXT] [--text-file FILE]
                 [--mark-hz HZ] [--shift-hz HZ] [--baud-rate BAUD] [--reverse] [--edge BITS]
-                [--repeat-count N] [--repeat-interval SECONDS] [--duration SECONDS]
+                [--repeat-count N] [--repeat-interval SECONDS] [--sf SF] [--lora-bw HZ]
+                [--lora-cr N] [--lora-preamble SYMBOLS] [--lora-sync BYTE] [--duration SECONDS]
                 [--update-rate HZ] [--thermal {auto,off,sensor,nominal}] [--thermal-model FILE]
                 [--drift HZ] [--dry-run] [--accept-licence] [-q] [-v] [--port DEVICE]
                 [--bridge-port DEVICE] [--no-load] [--reload] [--native] [--image FILE]
@@ -25,10 +26,11 @@ options:
 
 what to send:
   -f, --freq MHZ        carrier frequency in MHz (2320 .. 2450); required
-  -m, --mode {fm,usb,lsb,rtty}
+  -m, --mode {fm,usb,lsb,rtty,lora}
                         fm: narrowband FM; usb or lsb: single sideband; rtty: text as two-tone
-                        FSK, the audio, FM and SSB options and --duration do not apply (default
-                        fm)
+                        FSK; lora (research): text as a LoRa frame of up to 80 kHz bandwidth, -f
+                        is its centre; for rtty and lora the audio, FM and SSB options and
+                        --duration do not apply (default fm)
 
 audio source:
   -i, --input SOURCE    a WAV file, '-' for a pipe on stdin (a WAV stream or raw samples), or
@@ -77,6 +79,18 @@ RTTY (-m rtty):
   --repeat-interval SECONDS
                         pause between two transmissions, 1 .. 86400; the transmitter is off in
                         between (default 10)
+
+LoRa (-m lora, research):
+  --sf SF               spreading factor 5 .. 12 (default 8). Text comes from --text or --text-
+                        file, as for RTTY (the call sign belongs in it)
+  --lora-bw HZ          bandwidth, 15000 .. 80000 (default 62500). The chirp follows the PLL word
+                        at 40 000 updates/s, so only narrow LoRa fits; -f is the centre and may be
+                        moved by up to 40 kHz so that the sweep stays inside one byte of the PLL
+                        word
+  --lora-cr N           coding rate 4/(4+N), N = 1 .. 4 (default 1)
+  --lora-preamble SYMBOLS
+                        up-chirps before the sync word (default 8)
+  --lora-sync BYTE      sync word (default 0x34)
 
 session:
   --duration SECONDS    stop after this many seconds (default: until the source ends)

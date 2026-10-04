@@ -505,7 +505,8 @@ static struct {
     int32_t drift_hz;
     uint32_t word;
     bool prepared;
-} tx = {.rate_hz = 40000, .limit_s = 600};
+    int32_t max_steps;
+} tx = {.rate_hz = 40000, .limit_s = 600, .max_steps = TX_MAX_STEPS};
 #ifdef ESPDR_IQTEST
 static bool iq_skip_cal; /* research: IQ_OP_BEGIN bit 0 leaves out txcal_debuge_mode() */
 #endif
@@ -536,6 +537,11 @@ unsigned radio_tx_set(unsigned op, uint32_t arg)
         if (arg < 1 || arg > 3600)
             return CTL_BAD_ARGUMENT;
         tx.limit_s = arg;
+        return CTL_OK;
+    case TX_OP_RANGE:
+        if (arg < TX_MAX_STEPS || arg > TX_MAX_STEPS_WIDE)
+            return CTL_BAD_ARGUMENT;
+        tx.max_steps = (int32_t)arg;
         return CTL_OK;
     default:
         return CTL_UNKNOWN_OP;
@@ -583,7 +589,7 @@ unsigned radio_tx_begin(uint32_t *word)
         return CTL_BAD_ARGUMENT;
     *word = plan.sdm_word;
     unsigned low = plan.sdm_word & 0xFF;
-    if (low < TX_LOW_MARGIN || low > 255 - TX_LOW_MARGIN)
+    if ((int)low < tx.max_steps + 4 || (int)low > 255 - (tx.max_steps + 4))
         return CTL_BAD_ARGUMENT; /* the host moves the LO by up to 22 kHz so that the offsets never carry into the next byte */
     if (receiver.status != ESP_RADIO_OK)
         return CTL_NOT_READY;
@@ -711,7 +717,7 @@ uint32_t radio_tx_run(void)
             e2 = e1;
             e1 = w * 65536 - u;
             int32_t dw = w + wc;
-            dw = dw > TX_MAX_STEPS ? TX_MAX_STEPS : dw < -TX_MAX_STEPS ? -TX_MAX_STEPS : dw;
+            dw = dw > tx.max_steps ? tx.max_steps : dw < -tx.max_steps ? -tx.max_steps : dw;
             tx_set_gain(g);
             analog_write(I2C_SDM, 5, (uint8_t)((int32_t)base + dw));
             played++;
@@ -741,6 +747,7 @@ uint32_t radio_tx_run(void)
     txcal_work_mode();
     receiver.status = reconfigure(true);
     tx.prepared = false;
+    tx.max_steps = TX_MAX_STEPS;
     if (receiver.status != ESP_RADIO_OK)
         reason = TX_END_FAILED;
     (void)overruns;

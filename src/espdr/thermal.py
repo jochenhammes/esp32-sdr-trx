@@ -68,7 +68,7 @@ class Thermal:
         t = (self.n + np.arange(n)) / self.rate
         return -error_hz(t, self.start_c, self.p, self.carrier_hz)
 
-    def apply(self, records):
+    def apply(self, records, limit=MAX_Q4):
         """records: uint32 array of the transmit protocol. Returns a copy with the correction added to the frequency field (whole record units,
         the rounding error carried on so that the mean is exact)."""
         n = len(records)
@@ -81,5 +81,5 @@ class Thermal:
         self.carry = float(cum[-1] - whole[-1])
         self.n += n
         q4 = (records & 0xFFFF).astype(np.uint16).view(np.int16).astype(np.int32)
-        q4 = np.clip(q4 + add.astype(np.int32), -MAX_Q4, MAX_Q4).astype(np.int16)
+        q4 = np.clip(q4 + add.astype(np.int32), -limit, limit).astype(np.int16)
         return (records & np.uint32(0xFFFF0000)) | q4.view(np.uint16).astype(np.uint32)

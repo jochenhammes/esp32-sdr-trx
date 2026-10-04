@@ -6,7 +6,7 @@ import zlib
 
 from . import nb
 
-TX_OP_LO, TX_OP_RATE, TX_OP_DRIFT, TX_OP_LIMIT, TX_OP_BEGIN, TX_OP_END, TX_OP_TEMP = 40, 41, 42, 43, 44, 45, 46
+TX_OP_LO, TX_OP_RATE, TX_OP_DRIFT, TX_OP_LIMIT, TX_OP_BEGIN, TX_OP_END, TX_OP_TEMP, TX_OP_RANGE = 40, 41, 42, 43, 44, 45, 46, 47
 TX_MIN_HZ, TX_MAX_HZ = 2_320_000_000, 2_450_000_000
 TX_LOW_MARGIN = 48
 TX_STATUS_MAGIC, TX_STATUS_BYTES = 0xB6, 8
@@ -88,12 +88,14 @@ class Session:
         self.status = None          # last status frame
         self.summary = None
 
-    def configure(self, lo_hz, rate, drift_hz=0, limit_s=600):
+    def configure(self, lo_hz, rate, drift_hz=0, limit_s=600, range_steps=None):
         c = self.link.command
         c(TX_OP_LO, int(round(lo_hz / 100.0)), allow=(nb.CTL_OK,))
         c(TX_OP_RATE, int(rate))
         c(TX_OP_DRIFT, int(drift_hz) & 0xFFFF)
         c(TX_OP_LIMIT, int(limit_s))
+        if range_steps and range_steps != 44:
+            c(TX_OP_RANGE, int(range_steps))          # wider offsets for LoRa chirps; older firmware answers 'unknown op'
 
     def chip_temperature(self):
         """The chip's temperature in degrees C from its sensor (between sessions only). Range 2 is the SDK's default, range 1 takes over when it saturates."""

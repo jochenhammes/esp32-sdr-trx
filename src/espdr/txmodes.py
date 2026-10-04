@@ -49,8 +49,8 @@ def codes_for_levels(level, peak):
     return np.clip(np.rint(codes), peak, GAIN_WEAKEST).astype(np.uint32)
 
 
-def pack(q4, codes, end=False):
-    q4 = np.clip(np.rint(q4), -MAX_Q4, MAX_Q4).astype(np.int16)
+def pack(q4, codes, end=False, limit=MAX_Q4):
+    q4 = np.clip(np.rint(q4), -limit, limit).astype(np.int16)
     rec = q4.view(np.uint16).astype(np.uint32) | (np.asarray(codes, dtype=np.uint32) << 16)
     if end and len(rec):
         rec[-1] |= np.uint32(1 << 24)
@@ -111,10 +111,12 @@ class FskModulator:
 
     name = "RTTY"
 
-    def __init__(self, rate=40000, power_db=0.0, static_hz=0.0):
+    def __init__(self, rate=40000, power_db=0.0, static_hz=0.0, range_steps=None):
         self.rate = rate
         self.code = peak_code(power_db)
         self.static_q4 = int(round(static_hz / Q4_HZ))
+        self.range_steps = range_steps                                       # wider offsets than 44 steps (LoRa chirps): TX_OP_RANGE
+        self.limit_q4 = (range_steps - 2) * 16 if range_steps else MAX_Q4
 
     @property
     def static_hz(self):
@@ -122,7 +124,7 @@ class FskModulator:
 
     def process(self, offsets_hz):
         y = np.asarray(offsets_hz, dtype=float)
-        return pack(np.rint(y / Q4_HZ) + self.static_q4, np.full(len(y), self.code, dtype=np.uint32))
+        return pack(np.rint(y / Q4_HZ) + self.static_q4, np.full(len(y), self.code, dtype=np.uint32), limit=self.limit_q4)
 
 
 class SsbModulator:

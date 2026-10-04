@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import __version__, audio, board, nb, rtty, txlink, txmodes
+from . import __version__, audio, board, lora_phy, nb, rtty, txlink, txmodes
 
 LICENCE_NOTICE = """\
 Transmitting takes an amateur radio licence, and you are responsible for what you send. This transmitter is a Wi-Fi chip's
@@ -58,9 +58,9 @@ def build_parser():
     p.add_argument("-V", "--version", action="version", version=f"espdr-tx {__version__}")
     main = p.add_argument_group("what to send")
     main.add_argument("-f", "--freq", type=float, metavar="MHZ", help="carrier frequency in MHz (2320 .. 2450); required")
-    main.add_argument("-m", "--mode", choices=("fm", "usb", "lsb", "rtty"), default="fm",
-                      help="fm: narrowband FM; usb or lsb: single sideband; rtty: text as two-tone FSK, the audio, FM and SSB options "
-                           "and --duration do not apply (default fm)")
+    main.add_argument("-m", "--mode", choices=("fm", "usb", "lsb", "rtty", "lora"), default="fm",
+                      help="fm: narrowband FM; usb or lsb: single sideband; rtty: text as two-tone FSK; lora (research): text as a LoRa frame of up to 80 kHz bandwidth, "
+                           "-f is its centre; for rtty and lora the audio, FM and SSB options and --duration do not apply (default fm)")
     src = p.add_argument_group("audio source")
     src.add_argument("-i", "--input", metavar="SOURCE",
                      help="a WAV file, '-' for a pipe on stdin (a WAV stream or raw samples), or 'soundcard' / 'soundcard:DEVICE' "
@@ -104,6 +104,14 @@ def build_parser():
     rt.add_argument("--repeat-count", type=int, default=1, metavar="N", help="send the text N times, 1 .. 999 (default 1)")
     rt.add_argument("--repeat-interval", type=float, default=10.0, metavar="SECONDS",
                     help="pause between two transmissions, 1 .. 86400; the transmitter is off in between (default 10)")
+    lo = p.add_argument_group("LoRa (-m lora, research)")
+    lo.add_argument("--sf", type=int, default=8, metavar="SF", help="spreading factor 5 .. 12 (default 8). Text comes from --text or --text-file, as for RTTY (the call sign belongs in it)")
+    lo.add_argument("--lora-bw", type=float, default=62500.0, metavar="HZ",
+                    help="bandwidth, 15000 .. 80000 (default 62500). The chirp follows the PLL word at 40 000 updates/s, so only narrow LoRa fits; -f is the centre and may be moved by up to 40 kHz "
+                         "so that the sweep stays inside one byte of the PLL word")
+    lo.add_argument("--lora-cr", type=int, default=1, metavar="N", help="coding rate 4/(4+N), N = 1 .. 4 (default 1)")
+    lo.add_argument("--lora-preamble", type=int, default=8, metavar="SYMBOLS", help="up-chirps before the sync word (default 8)")
+    lo.add_argument("--lora-sync", type=lambda v: int(v, 0), default=0x34, metavar="BYTE", help="sync word (default 0x34)")
     run = p.add_argument_group("session")
     run.add_argument("--duration", type=float, metavar="SECONDS", help="stop after this many seconds (default: until the source ends)")
     run.add_argument("--update-rate", type=int, default=40000, metavar="HZ", help="records per second sent to the chip, 8000 .. 40000 (default 40000)")
@@ -132,6 +140,8 @@ def build_parser():
 
 
 def _modulator(args, power_db, plan=None):
+    if args.mode == "lora":
+        return txmodes.FskModulator(rate=args.update_rate, power_db=power_db, static_hz=0.0, range_steps=plan["range_steps"])
     if args.mode == "rtty":
         return txmodes.FskModulator(rate=args.update_rate, power_db=power_db, static_hz=plan["static_hz"])
     if args.mode == "fm":
@@ -193,6 +203,75 @@ def _check_rtty(args):
     if rtty.estimate_duration(text, args.baud_rate) > 3500:
         raise SystemExit("espdr-tx: the text takes more than 3500 s to send; the chip ends a transmission after 3600 s. Send it in parts")
     return text
+
+
+def _check_lora(args):
+    """Arguments of -m lora; returns the payload bytes."""
+    if (args.text is None) == (args.text_file is None):
+        raise SystemExit("espdr-tx: -m lora needs exactly one of --text and --text-file")
+    if args.input or args.test_tone:
+        raise SystemExit("espdr-tx: -m lora sends text; -i and --test-tone are for the audio modes")
+    if not 5 <= args.sf <= 12:
+        raise SystemExit("espdr-tx: --sf must be between 5 and 12")
+    if not 15000 <= args.lora_bw <= 80000:
+        raise SystemExit("espdr-tx: --lora-bw must be between 15000 and 80000 Hz (the records follow the chirp at 40 000 updates/s)")
+    if not 1 <= args.lora_cr <= 4:
+        raise SystemExit("espdr-tx: --lora-cr must be between 1 and 4")
+    if not 6 <= args.lora_preamble <= 65535:
+        raise SystemExit("espdr-tx: --lora-preamble must be at least 6")
+    if not 1 <= args.repeat_count <= 999 or not 1 <= args.repeat_interval <= 86400:
+        raise SystemExit("espdr-tx: --repeat-count must be 1 .. 999 and --repeat-interval 1 .. 86400")
+    payload = _rtty_text(args).encode("latin-1", "replace")
+    if not 1 <= len(payload) <= 255:
+        raise SystemExit("espdr-tx: the LoRa payload must have 1 to 255 bytes")
+    if lora_phy.symbols_per_frame(len(payload), args.sf, args.lora_cr, args.lora_preamble) * (1 << args.sf) / args.lora_bw > 3500:
+        raise SystemExit("espdr-tx: the frame takes more than 3500 s")
+    return payload
+
+
+def _lora_plan(args):
+    """Where the chirp goes: the channel centre is the LO. The sweep needs range_steps PLL steps either side, and the low byte of the PLL word must stay
+    range_steps + 4 away from the ends of the byte (no carry), so the centre is moved to the nearest word that fits (at most 40 kHz)."""
+    ppm = 1.0 + args.ppm * 1e-6
+    range_steps = max(44, int(np_ceil(args.lora_bw / 2 / txlink.PLL_STEP_HZ)) + 3)
+    if range_steps > 90:
+        raise SystemExit("espdr-tx: the chirp is wider than the records can carry (90 PLL steps either side)")
+    margin = range_steps + 4
+    word = int(txlink.lo_word(int(round(args.freq * 1e6 / ppm))))
+    low = word & 0xFF
+    if low < margin:
+        word += margin - low
+    elif low > 255 - margin:
+        word -= low - (255 - margin)
+    lo_hz = int(round(txlink.word_hz(word) / 100.0) * 100)
+    for k in range(6):                                  # the chip works from the frequency in units of 100 Hz: make sure it lands on the same word
+        if txlink.lo_word(lo_hz) == word:
+            break
+        lo_hz += 100.0 if txlink.lo_word(lo_hz) < word else -100.0
+    return dict(lo_hz=lo_hz, centre_hz=txlink.word_hz(txlink.lo_word(lo_hz)) * ppm, range_steps=range_steps, moved_hz=txlink.word_hz(txlink.lo_word(lo_hz)) * ppm - args.freq * 1e6)
+
+
+class LoraStream:
+    """The frequency track of one LoRa frame, in blocks of 20 ms; fraction() says how much has been handed out."""
+
+    def __init__(self, payload, args):
+        self.track = lora_phy.frame_track(payload, args.sf, args.lora_bw, args.update_rate, args.lora_cr, args.lora_preamble, args.lora_sync)
+        self.pos = 0
+        self.duration = len(self.track) / args.update_rate
+
+    def blocks(self, size=800):
+        while self.pos < len(self.track):
+            b = self.track[self.pos:self.pos + size]
+            self.pos += len(b)
+            yield b
+
+    def fraction(self):
+        return self.pos / len(self.track)
+
+
+def np_ceil(x):
+    import math
+    return math.ceil(x)
 
 
 def _rtty_plan(args):
@@ -266,7 +345,7 @@ def _transmit(args, out, mod, session, lo_hz, stop, interrupted, blocks, live, s
     """One transmission: configure and begin the chip, feed it, report. Returns (the chip's summary, ended by the user)."""
     import numpy as np
     correct = _thermal(args, session, out)
-    session.configure(lo_hz, args.update_rate, drift_hz=args.drift, limit_s=3600)
+    session.configure(lo_hz, args.update_rate, drift_hz=args.drift, limit_s=3600, range_steps=getattr(mod, "range_steps", None))
     session.begin(expect_word=txlink.lo_word(lo_hz))
 
     q = queue.Queue(maxsize=64)
@@ -279,11 +358,11 @@ def _transmit(args, out, mod, session, lo_hz, stop, interrupted, blocks, live, s
                 if stream is None:
                     level[0] = 20 * np.log10(max(float(np.sqrt(np.mean(np.square(b)))), 1e-6))
                 r = mod.process(b)
-                q.put(correct.apply(r) if correct else r)
+                q.put(correct.apply(r, getattr(mod, "limit_q4", txmodes.MAX_Q4)) if correct else r)
             if stream is None:
                 for _ in range(10):                          # flush the filters with silence
                     r = mod.process(np.zeros(160))
-                    q.put(correct.apply(r) if correct else r)
+                    q.put(correct.apply(r, getattr(mod, "limit_q4", txmodes.MAX_Q4)) if correct else r)
         except Exception as e:                                   # noqa: BLE001 - reported by the main thread
             err.append(e)
         finally:
@@ -343,13 +422,16 @@ def run(args, out=None):
             print(line)
         return 0
     is_rtty = args.mode == "rtty"
+    is_lora = args.mode == "lora"
     if args.freq is None:
         raise SystemExit("espdr-tx: --freq is required (for example: espdr-tx -f 2350 -i speech.wav); see espdr-tx -h")
     if is_rtty:
         text = _check_rtty(args)
+    elif is_lora:
+        payload = _check_lora(args)
     else:
         if args.text is not None or args.text_file is not None or args.repeat_count != 1:
-            raise SystemExit("espdr-tx: --text, --text-file and --repeat-count belong to -m rtty")
+            raise SystemExit("espdr-tx: --text, --text-file and --repeat-count belong to -m rtty and -m lora")
         if not args.input and not args.test_tone:
             raise SystemExit("espdr-tx: give an audio source with -i (a WAV file, '-' for stdin, or 'soundcard') or use --test-tone")
     if not txlink.TX_MIN_HZ / 1e6 <= args.freq <= txlink.TX_MAX_HZ / 1e6:
@@ -358,13 +440,19 @@ def run(args, out=None):
         raise SystemExit("espdr-tx: --update-rate must be 8000, 16000, 24000, 32000 or 40000")
     if not 0 <= args.carrier <= 0.9:
         raise SystemExit("espdr-tx: --carrier must be between 0 and 0.9")
-    plan = _rtty_plan(args) if is_rtty else None
+    plan = _rtty_plan(args) if is_rtty else _lora_plan(args) if is_lora else None
     try:
         mod = _modulator(args, args.power, plan)
     except ValueError as e:
         raise SystemExit(f"espdr-tx: {e}")
 
-    if is_rtty:
+    if is_lora:
+        lo_hz = plan["lo_hz"]
+        probe = LoraStream(payload, args)
+        print(f"espdr-tx {__version__}: LoRa SF{args.sf}, bandwidth {args.lora_bw / 1e3:g} kHz, CR 4/{4 + args.lora_cr}, centre {plan['centre_hz'] / 1e6:.6f} MHz "
+              f"({plan['moved_hz'] / 1e3:+.1f} kHz from -f), {len(payload)} bytes, one frame {probe.duration * 1e3:.0f} ms, range {plan['range_steps']} steps, "
+              f"power {args.power:g} dB, gain code {txmodes.peak_code(args.power)}, {args.update_rate} updates/s", file=out)
+    elif is_rtty:
         lo_hz = plan["lo_hz"]
         frames = rtty.message_frames(text, args.baud_rate)
         duration = rtty.duration_s(frames, args.baud_rate)
@@ -396,6 +484,9 @@ def run(args, out=None):
 
     def sources():
         stop = threading.Event()
+        if is_lora:
+            stream = LoraStream(payload, args)
+            return stop, stream.blocks(), None, f"LoRa frame, {len(payload)} bytes", stream
         if is_rtty:
             stream = rtty.OffsetStream(frames, args.update_rate, args.baud_rate, plan["shift_nominal"], args.reverse, args.edge)
             return stop, stream.blocks(), None, f"RTTY text, {len(text)} characters", stream

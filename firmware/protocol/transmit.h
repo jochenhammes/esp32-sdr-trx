@@ -28,10 +28,14 @@
 #define TX_OP_TEMP 46  /* the chip's temperature: arg = range 0..4 of its sensor (2 is the SDK default); value = range << 24 | sum of 16 raw readings.
                           Degrees C = 0.4386 * (sum / 16) - 27.88 * offset - 20.52 with the offsets -2, -1, 0, 1, 2 of the ranges. Between sessions only. */
 
+#define TX_OP_RANGE 47 /* largest offset in PLL steps the records may carry (44 .. 90, default 44; reset to 44 after each session). The LO's PLL word must then have its low byte in
+                          range + 4 .. 251 - range, and the host keeps its records two steps inside. LoRa chirps of 62.5 kHz bandwidth need about 70 steps (docs/research/PLAN-LORA-IQ.md, L3) */
+
 #define TX_MIN_HZ 2320000000u
 #define TX_MAX_HZ 2450000000u
 #define TX_LOW_MARGIN 48 /* the low byte of the PLL word must lie in 48 .. 207 so that the offsets (clamped to +-44) never carry */
 #define TX_MAX_STEPS 44
+#define TX_MAX_STEPS_WIDE 90
 #define TX_GAIN_STRONGEST 64
 #define TX_GAIN_WEAKEST 127
 

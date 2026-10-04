@@ -216,11 +216,14 @@ def main():
     ap.add_argument("--cr", type=int, default=1, help="coding rate 4/(4+cr)")
     ap.add_argument("--preamble", type=int, default=8)
     ap.add_argument("--frame", choices=("own", "meshcore"), default="own", help="own: 12 bytes with the call sign; meshcore: a MeshCore raw packet (unencrypted)")
+    ap.add_argument("--text", help="payload text (default: the L1 frame)")
     ap.add_argument("--snrs", default="12,9,7,5,4,3,2,1,0,-1")
     args = ap.parse_args()
     global PAYLOAD
     if args.frame == "meshcore":
         PAYLOAD = MESHCORE_RAW
+    if args.text:
+        PAYLOAD = args.text.encode("latin-1")
     if args.cmd == "render":
         cmd_render(args)
     elif args.cmd == "send":
