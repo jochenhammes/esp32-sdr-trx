@@ -176,8 +176,8 @@ conjugate it. Verified by moving a carrier 20 kHz up and seeing the raw tone mov
 
 ## The transmitter
 
-*(No I/Q transmit input was found on the chip. Everything below was found out and measured step by step; the evidence is in
-[research/TX-RESEARCH.md](research/TX-RESEARCH.md).)*
+*(This transmitter does not use the chip's I/Q playback engine, which was found after this part had been written (see Stage 6 in
+[research/TX-RESEARCH.md](research/TX-RESEARCH.md)). Everything below was found out and measured step by step; the evidence is in the same file.)*
 
 **What the chip offers.** The PHY library's test-tone mode switches on the transmit chain with an unmodulated carrier at the LO. Two things can be steered
 while it runs, and both are fast enough for voice:
@@ -188,8 +188,8 @@ while it runs, and both are fast enough for voice:
   0.28 dB per step over 17.9 dB (the carrier at code 64 is 17.9 dB above code 127), rise time about 3 microseconds, tested to 20 kHz. Codes above 127 land on a
   flat plateau 20 dB higher and are not used.
 
-The control registers that look like an I/Q input (`0x60006040/44`) are not one: only the very first write of a test tone produces a carrier and the fields behave
-like switches. The research notes document the dead ends.
+The control registers that look like an I/Q input (`0x60006040/44`) are not one: they inject a constant, only the very first write of a test tone produces a carrier and the fields behave
+like switches. The real I/Q input is the playback engine mentioned above. The research notes document the dead ends.
 
 **Polar modulation.** For FM only the frequency moves. For SSB the host computes the *analytic signal* of the audio (the audio plus `j` times its
 Hilbert transform: positive frequencies only, which is the upper sideband), adds a carrier, and sends its magnitude (the gain code) and the derivative of its phase
