@@ -16,6 +16,7 @@ is therefore limited to fixed buffers changed between bursts.
 | [DESIGN-IQ-TX.md](DESIGN-IQ-TX.md) | what the engine can be used for, the streaming experiments E1 (CPU refill) and E2 (GDMA refill) with their negative results, the decision |
 | [PLAN-IQ-TX.md](PLAN-IQ-TX.md), [PLAN-IQ-TX-B.md](PLAN-IQ-TX-B.md) | the plans (Phase A to D; plan B: the trial-and-error search for the missing step) |
 | [TX-RESEARCH.md](TX-RESEARCH.md) | the older research notes of the polar transmitter, with Stages 4 to 6 on the engine (static analysis, report of the original author) |
+| [FREQUENCY-DRIFT.md](FREQUENCY-DRIFT.md) | the carrier's drift against the chip temperature (on-chip sensor, crystal model, what it means for RTTY); scripts in `scripts/drift/` |
 | [REGISTER-MAP.md](REGISTER-MAP.md) | register map from the PHY libraries (static, inferred) |
 
 ## Results in short (all measured, board: ESP32-S3 dev kit QFN56 rev v0.2, LO 2350 MHz unless noted)
