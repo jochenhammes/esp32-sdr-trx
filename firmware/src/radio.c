@@ -767,7 +767,7 @@ static struct {
     bool begun, keyed;
     int32_t rot_cos, rot_sin, rot2_cos, rot2_sin, pre_g, pre_p;
     uint32_t st_g, st_inc, st_inc2;
-    uint32_t addr, ms, last_op, play_bits, ld_pos, gap_us, ld_i;
+    uint32_t addr, ms, last_op, play_bits, ld_pos, gap_us, ld_i, ld_tgt;
 } iq = {.ms = 100, .play_bits = 16383u | (1u << 15)};
 
 static void iq_end(void)
@@ -836,6 +836,7 @@ static uint32_t iq_fill(unsigned amp, unsigned mode)
 }
 
 
+#ifdef ESPDR_IQ_STREAM /* experiment E1, finished (docs/research/DESIGN-IQ-TX.md); built only with -DESPDR_IQ_STREAM */
 /* ---- E1: stream new buffers into bank 2 while the engine plays it (40 Msps, 6 CPU cycles per word) ---- */
 static uint32_t *const iq_lut = (uint32_t *)0x3FCB0000u; /* 1024 words in capture bank 0 (free in the research build; the work RAM is full) */
 
@@ -996,6 +997,8 @@ static uint32_t iq_wcheck(unsigned playing)
 }
 
 
+#endif /* ESPDR_IQ_STREAM */
+
 #ifdef ESPDR_IQ_GDMA /* experiment E2, finished (docs/research/DESIGN-IQ-TX.md); built only with -DESPDR_IQ_GDMA */
 /* ---- E2: refill bank 2 with the GDMA memory-to-memory channel while the engine reads it ---- */
 #define IQ_BANK1 0x3FCC0000u
@@ -1107,6 +1110,70 @@ static uint32_t iq_play(uint32_t bits)
     return (timeouts > 0xFFFF ? 0xFFFFu : timeouts) << 16 | (done > 0xFFFF ? 0xFFFFu : done);
 }
 
+/* ---- L2 of docs/research/PLAN-LORA-IQ.md: a LoRa frame symbol by symbol. The engine plays a short window per symbol; between two triggers (engine idle) the CPU copies the next window
+ * from a ring of the base chirp in bank 1 into bank 2. The symbol clock is the cycle counter; the end of every symbol is left out (the copy takes that time). ---- */
+static struct {
+    uint32_t nsym, w, os_q8, lp, tc, reps, pbits, ov;
+} lw = {.w = 788, .os_q8 = 6300, .lp = 600, .tc = 4727, .reps = 1, .ov = 400};
+
+__attribute__((noinline)) static uint32_t iq_lora(uint32_t report)
+{
+    const uint32_t *ring = (const uint32_t *)0x3FCC0000u;
+    uint32_t *dst = (uint32_t *)IQ_BANK2;
+    const uint16_t *syms = (const uint16_t *)0x3FCB1000u; /* capture bank 0 behind the lookup table */
+    const uint32_t base0 = lw.pbits & 0x0FF8BFFFu & ~0x3FFFu;
+    uint32_t late = 0, copy_cycles = 0, first_late = 0xFFFFu;
+    for (uint32_t rep = 0; rep < lw.reps; rep++) {
+        uint32_t next = cpu_cycles() + 2400u;
+        for (uint32_t i = 0; i < lw.nsym; i++) {
+            uint32_t code = syms[i], len = lw.w, play = lw.lp, period = lw.tc;
+            const uint32_t *src;
+            if (code & 0x8000u) {
+                src = ring + 2u * lw.w;
+            } else if (code & 0x4000u) {
+                next += lw.tc / 4u; /* the quarter down-chirp of the SFD is left out: silence for its time, and the next window is copied meanwhile */
+                continue;
+            } else {
+                src = ring + (((code & 0xFFFu) * lw.os_q8) >> 8);
+            }
+            uint32_t t = cpu_cycles();
+            for (uint32_t k = 0; k + 4u <= len; k += 4u) {
+                uint32_t a = src[k], b = src[k + 1], c = src[k + 2], d = src[k + 3];
+                dst[k] = a;
+                dst[k + 1] = b;
+                dst[k + 2] = c;
+                dst[k + 3] = d;
+            }
+            __asm__ volatile("memw" ::: "memory");
+            copy_cycles = cpu_cycles() - t;
+            if ((int32_t)(cpu_cycles() - next) > 0) {
+                late++;
+                if (first_late == 0xFFFFu)
+                    first_late = i;
+            } else {
+                while ((int32_t)(cpu_cycles() - next) < 0)
+                    ;
+            }
+            const uint32_t base = base0 | ((play - 1u) & 0x3FFFu);
+            REG(IQ_DAC_REG) = base;
+            REG(IQ_DAC_REG) = base | (1u << 31);
+            next += period;
+            uint32_t t1 = cpu_cycles();
+            while (!(REG(IQ_DAC_REG) & (1u << 18)))
+                if (cpu_cycles() - t1 > 240000u)
+                    break;
+            REG(IQ_DAC_REG) = base;
+        }
+        if (iq.gap_us) {
+            uint32_t g = cpu_cycles() + iq.gap_us * 240u;
+            while ((int32_t)(cpu_cycles() - g) < 0)
+                ;
+        }
+    }
+    REG(IQ_DAC_REG) = 0;
+    return (late > 0xFFFFu ? 0xFFFFu : late) << 16 | (report ? first_late : (copy_cycles > 0xFFFFu ? 0xFFFFu : copy_cycles));
+}
+
 unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
 {
     iq.last_op = cpu_cycles();
@@ -1197,7 +1264,38 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
     case IQ_OP_LDQ:
         if (iq.ld_pos >= IQ_WORDS)
             return CTL_BAD_ARGUMENT;
-        ((volatile uint32_t *)IQ_BANK2)[iq.ld_pos++] = iq.ld_i | ((arg & 0x3FFu) << 10);
+        ((volatile uint32_t *)(iq.ld_tgt ? 0x3FCC0000u : IQ_BANK2))[iq.ld_pos++] = iq.ld_i | ((arg & 0x3FFu) << 10);
+        return CTL_OK;
+    case IQ_OP_LDTGT:
+        iq.ld_tgt = arg & 1u;
+        return CTL_OK;
+    case IQ_OP_SYM:
+        if (lw.nsym >= 1500u)
+            return CTL_BAD_ARGUMENT;
+        ((volatile uint16_t *)0x3FCB1000u)[lw.nsym++] = (uint16_t)arg;
+        return CTL_OK;
+    case IQ_OP_SYMCLR:
+        lw.nsym = 0;
+        return CTL_OK;
+    case IQ_OP_LPAR: {
+        uint32_t v = arg & 0xFFFFFFu;
+        switch (arg >> 24) {
+        case 0: lw.w = v; break;
+        case 1: lw.os_q8 = v; break;
+        case 2: lw.lp = v; break;
+        case 3: lw.tc = v; break;
+        case 4: lw.reps = v; break;
+        case 5: lw.pbits = v; break;
+        case 6: lw.ov = v; break;
+        default: return CTL_BAD_ARGUMENT;
+        }
+        return CTL_OK;
+    }
+    case IQ_OP_LORA:
+        if (!lw.nsym || lw.w < 8u || lw.w > 8000u || lw.lp < 8u || lw.lp > lw.w)
+            return CTL_BAD_ARGUMENT;
+        *value = iq_lora(arg);
+        iq.last_op = cpu_cycles();
         return CTL_OK;
     case IQ_OP_GAP:
         iq.gap_us = arg > 1000000u ? 1000000u : arg;
@@ -1205,6 +1303,7 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
     case IQ_OP_TEMP:
         *value = radio_tx_temp(arg);
         return CTL_OK;
+#ifdef ESPDR_IQ_STREAM
     case IQ_OP_WCHECK:
         *value = iq_wcheck(arg & 3);
         return CTL_OK;
@@ -1217,6 +1316,7 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
         *value = iq_stream(arg);
         iq.last_op = cpu_cycles();
         return CTL_OK;
+#endif
     case IQ_OP_PRE_G:
         iq.pre_g = (int32_t)arg;
         return CTL_OK;

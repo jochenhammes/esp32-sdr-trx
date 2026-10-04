@@ -61,6 +61,93 @@ def load_words(esp, words, chunk=40):
     return time.time() - t0
 
 
+def ring_words(sf, bw, f_off, amp=200, rate=DAC_RATE, g=PRE_G, p=PRE_P):
+    """The ring for scheme W: the base chirp twice (a window of an up-chirp with value k starts k chips in), then the down-chirp once. The chirp is periodic in N chips,
+    so the ring is the formula at t = (n / os) mod N chips, whatever the (fractional) oversampling is. Returns (words, W)."""
+    N = 1 << sf
+    os_f = rate / bw
+    W = int(round(N * os_f))
+    n = np.arange(3 * W)
+    t = (n / os_f) % N
+    base = np.exp(1j * np.pi * (t * t / N - t))
+    z = np.concatenate([base[:2 * W], np.conj(base[2 * W:3 * W])]) * np.exp(2j * np.pi * f_off * n / rate)
+    q = (1 + g) * z.imag + p * z.real
+    ii = np.clip(np.rint(z.real * amp), -512, 511).astype(np.int32)
+    qq = np.clip(np.rint(q * amp), -512, 511).astype(np.int32)
+    return (ii & 0x3FF).astype(np.uint32) | ((qq & 0x3FF).astype(np.uint32) << 10), W, os_f
+
+
+def symbol_codes(payload, sf, cr=1, preamble=8, sync_word=0x34):
+    sw = ln.sync_symbols(sync_word)
+    return [0] * preamble + [sw[0], sw[1], 0x8000, 0x8000, 0x4000] + ln.frame_symbols(payload, sf, cr)
+
+
+def load_target(esp, words, bank1):
+    import iqtest as it
+    esp.c(it.IQ_OP_LDTGT, 1 if bank1 else 0)
+    load_words(esp, words)
+    esp.c(it.IQ_OP_LDTGT, 0)
+
+
+def cmd_wsend(args):
+    import iqtest as it
+    lo_req = args.lo * 1e6
+    words, W, os_f = ring_words(args.sf, args.bw, args.offset, args.amp)
+    codes = symbol_codes(PAYLOAD, args.sf, args.cr, args.preamble)
+    N = 1 << args.sf
+    Ts = N / args.bw
+    tc = int(round(Ts * 240e6))
+    frame_us = (len(codes) - 0.75) * Ts * 1e6
+    lo_e, hi_e = lo_req + args.offset - args.bw / 2, lo_req + args.offset + args.bw / 2
+    print(f"scheme W: SF{args.sf}, BW {args.bw / 1e6:g} MHz, {len(codes)} symbols of {Ts * 1e6:.2f} us = frame {frame_us:.0f} us, window {W} words (oversampling {os_f:.3f}), "
+          f"on the air {lo_e / 1e6:.3f} .. {hi_e / 1e6:.3f} MHz, gain code {args.gain}")
+    if not (2320e6 <= lo_e and hi_e <= 2450e6):
+        raise SystemExit("outside the 13 cm band")
+    esp = it.Esp(args.load)
+    pluto = it.Pluto(args.uri)
+    lo, word = esp.begin(lo_req)
+    try:
+        esp.key(args.gain, 4)
+        esp.tx_filter(0)
+        load_target(esp, words, True)
+        esp.c(it.IQ_OP_SYMCLR)
+        for c in codes:
+            esp.c(it.IQ_OP_SYM, c)
+        for idx, val in ((0, W), (1, int(round(os_f * 256))), (3, tc), (5, 0)):
+            esp.c(it.IQ_OP_LPAR, idx << 24 | val)
+        # measure the copy time with one short run, then play as much of every symbol as the period leaves
+        esp.c(it.IQ_OP_LPAR, 2 << 24 | 8)
+        esp.c(it.IQ_OP_LPAR, 4 << 24 | 1)
+        esp.c(it.IQ_OP_GAP, 0)
+        _, v = esp.c(it.IQ_OP_LORA)
+        copy_cycles = v & 0xFFFF
+        lp = int(min(W, (tc - copy_cycles - args.slack) // 6))
+        print(f"copying {W} words takes {copy_cycles} cycles ({copy_cycles / 240:.2f} us); the symbol period is {tc} cycles; the engine plays {lp} of {W} words per symbol "
+              f"(play fraction {lp / W:.2f}, {10 * np.log10(lp / W):.1f} dB)")
+        esp.c(it.IQ_OP_LPAR, 2 << 24 | lp)
+        esp.c(it.IQ_OP_LPAR, 6 << 24 | args.slack)
+        esp.c(it.IQ_OP_LPAR, 4 << 24 | args.reps)
+        esp.c(it.IQ_OP_GAP, args.gap_us)
+        caps = []
+        for pg in [float(v) for v in str(args.pluto_gain).split(",")]:
+            pluto.tune(lo + args.center_off, args.fs, pg)
+            time.sleep(0.2)
+            esp.link.send(it.IQ_OP_LORA, 1)
+            time.sleep(0.05)
+            x = pluto.capture(args.n)
+            st, v = esp.link._response(it.IQ_OP_LORA, timeout=30.0)
+            late = v >> 16
+            print(f"Pluto gain {pg:g} dB: status {st}, late triggers {late}, the first one at symbol {v & 0xFFFF} of the last frame, capture clip {np.max(np.abs(np.concatenate([x.real, x.imag]))) / 2048:.2f}", flush=True)
+            caps.append((pg, x, args.reps, args.offset - args.center_off))
+    finally:
+        esp.end()
+    for pg, x, reps, shift in caps:
+        if args.save:
+            np.savez_compressed(args.save.replace(".npz", f"_pg{pg:g}.npz"), x=x.astype(np.complex64), fs=args.fs, shift=shift)
+        print(f"--- Pluto gain {pg:g} dB")
+        analyse(x, args.fs, shift, args, reps)
+
+
 def lines_on_air(lo_hz, f_off, bw):
     return (lo_hz + f_off - bw / 2, lo_hz + f_off + bw / 2, lo_hz, lo_hz - f_off)
 
@@ -195,7 +282,7 @@ def cmd_analyse(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=("render", "send", "analyse", "noise"))
+    ap.add_argument("cmd", choices=("render", "send", "analyse", "noise", "wsend"))
     ap.add_argument("file", nargs="?")
     ap.add_argument("--lo", type=float, default=2350.0, help="ESP LO in MHz")
     ap.add_argument("--sf", type=int, default=5)
@@ -216,6 +303,8 @@ def main():
     ap.add_argument("--cr", type=int, default=1, help="coding rate 4/(4+cr)")
     ap.add_argument("--preamble", type=int, default=8)
     ap.add_argument("--frame", choices=("own", "meshcore"), default="own", help="own: 12 bytes with the call sign; meshcore: a MeshCore raw packet (unencrypted)")
+    ap.add_argument("--reps", type=int, default=20, help="scheme W: repetitions of the frame")
+    ap.add_argument("--slack", type=int, default=450, help="scheme W: CPU cycles kept free in every symbol period")
     ap.add_argument("--text", help="payload text (default: the L1 frame)")
     ap.add_argument("--snrs", default="12,9,7,5,4,3,2,1,0,-1")
     args = ap.parse_args()
@@ -228,6 +317,8 @@ def main():
         cmd_render(args)
     elif args.cmd == "send":
         cmd_send(args)
+    elif args.cmd == "wsend":
+        cmd_wsend(args)
     elif args.cmd == "noise":
         cmd_noise(args)
     else:

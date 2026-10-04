@@ -43,6 +43,14 @@
 #define IQ_OP_LDI 84       /* arg: I of the next word (10 bits, two's complement) */
 #define IQ_OP_LDQ 86       /* arg: Q (10 bits): writes the word I | Q << 10 to bank 2 at the load index, which then advances (engine idle only). Two ops per word keep every argument below 16 bits, so they can be sent in bulk */
 #define IQ_OP_GAP 85       /* arg: pause in microseconds between two triggers of IQ_OP_PLAY (0 = the 337 ns re-trigger pause only) */
+#define IQ_OP_LDTGT 87     /* LoRa plan, L2: arg 0: IQ_OP_LDPOS / LDI / LDQ write bank 2 (default); 1: they write the ring in bank 1 (0x3FCC0000, 16384 words) */
+#define IQ_OP_SYM 88       /* arg (< 0xFFFF): append a symbol code to the frame list (up to 1500): bits 11:0 up-chirp id; bit 15 down-chirp; bit 14 a quarter of a symbol period of silence (where the SFD has its quarter down-chirp) */
+#define IQ_OP_SYMCLR 89    /* empty the frame list */
+#define IQ_OP_LORA 90      /* play the frame list IQ_OP_LPAR reps times: per symbol the chip copies a window of the ring into bank 2, waits for the symbol clock and triggers the engine for lp words.
+                              Ring layout: the base up-chirp twice (2 * w words), then the down-chirp (w words). window of an up-chirp with id k: ring[(k * os_q8) >> 8 ...] (w words).
+                              value: bits 15:0 cycles of the last window copy, bits 31:16 triggers that came late */
+#define IQ_OP_LPAR 91      /* arg: index << 24 | value. 0: w (window words), 1: os_q8 (words per chip * 256), 2: lp (words played per symbol), 3: tc (symbol period in CPU cycles at 240 MHz),
+                              4: reps, 5: engine bits (bit 15 = 80 Msps; count is set here), 6: ov (CPU cycles of fixed cost per symbol, default 400; unused) */
 #define IQ_OP_PBUS_RD 63 /* arg: block << 4 | index; value: the analog bus register (9 bits) */
 #define IQ_OP_PBUS_WR 64 /* arg: value << 8 | block << 4 | index */
 #define IQ_OP_KEY2 62  /* like IQ_OP_KEY but with the PHY's phy_txtone_start(mhz, 0, power): arg bits 15:0 mhz, 23:16 power, 31:24 bank grant */

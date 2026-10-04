@@ -253,7 +253,7 @@ def detect(x, sf, preamble=8, threshold=6.0):
     return t_apparent, i * stride, j * stride + N, float(np.mean(ratio[i:j + 1]))
 
 
-def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max_payload=64, track=0.6):
+def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max_payload=64, track=0.6, calibrate=False):
     """Decode one frame from a complex recording. Returns a dict (payload, crc_ok, header_ok, timing, cfo_hz, snr) or None if no preamble is found."""
     os_ = int(round(fs / bw))
     N = 1 << sf
@@ -339,16 +339,33 @@ def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max
 
     def decode(off0):
         state = [off0]
+        seen = []
+        # calibrate the offset on the two sync symbols (known values, the same geometry as the payload: a truncated window has a biased peak that depends on the fraction of the offset)
+        sw = sync_symbols(sync_word)
+        fr_ = []
+        for j, sid in enumerate(sw):
+            w0 = x[pre_start + (preamble + j) * N: pre_start + (preamble + j + 1) * N]
+            if len(w0) == N:
+                sp = np.abs(np.fft.fft(w0 * down * np.exp(-2j * np.pi * off0 * np.arange(N) / N)))
+                k0 = int(np.argmax(sp))
+                if k0 == sid:
+                    fr_.append(_parabolic(sp, k0) - sid)
+        if calibrate and fr_ and abs(np.mean(fr_)) < 0.5:
+            state[0] += float(np.mean(fr_))
+        out.update(off0=float(off0), off_cal=float(state[0]), sync_frac=[float(v) for v in fr_])
 
         def sym_at(i):
             """The symbol value of payload symbol i (called in order). The offset follows a drifting carrier: the part of the bin that is not an integer is the offset error."""
             w = x[pay0 + i * N: pay0 + (i + 1) * N]
             if len(w) < N:
                 return None
-            b = _peak_bin(w, down) - state[0]
-            sym = int(round(b))
-            state[0] += track * (b - sym)
-            return sym % N
+            # take the offset out of the window first, then the peak of the zero-padded spectrum (unbiased for the offset tracking, unlike the bare bins)
+            pos = _peak_bin(w * np.exp(-2j * np.pi * state[0] * np.arange(N) / N), down)
+            sym = int(round(pos)) % N
+            frac = ((pos - sym + N / 2) % N) - N / 2
+            state[0] += track * frac
+            seen.append(sym)
+            return sym
 
         # first block: SF-2 rows, 8 columns (CR 4/8)
         def block_nibbles(i0, sf_app, cw_len, cr_app, count):
@@ -372,19 +389,19 @@ def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max
 
         nib = block_nibbles(0, sf - 2, 8, 4, 0)
         if nib is None:
-            return dict(out, payload=None, header_ok=False, crc_ok=False)
+            return dict(out, payload=None, header_ok=False, crc_ok=False, symbols=seen)
         plen = (nib[0] << 4) | nib[1]
         cr = nib[2] >> 1
         has_crc = bool(nib[2] & 1)
         out.update(payload_len=plen, cr=cr, has_crc=has_crc)
         if not (1 <= cr <= 4) or plen == 0 or plen > max_payload:
-            return dict(out, payload=None, header_ok=False, crc_ok=False)
+            return dict(out, payload=None, header_ok=False, crc_ok=False, symbols=seen)
         need = 5 + 2 * plen + (4 if has_crc else 0)
         sym_i = 8
         while len(nib) < need:
             more = block_nibbles(sym_i, sf, 4 + cr, cr, 0)
             if more is None:
-                return dict(out, payload=None, header_ok=False, crc_ok=False)
+                return dict(out, payload=None, header_ok=False, crc_ok=False, symbols=seen)
             nib += more
             sym_i += 4 + cr
         hdr = header_nibbles(plen, cr, has_crc)
@@ -397,7 +414,7 @@ def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max
             crcn = nib[5 + 2 * plen:5 + 2 * plen + 4]
             rx_crc = crcn[0] | (crcn[1] << 4) | (crcn[2] << 8) | (crcn[3] << 12)
             crc_ok = rx_crc == crc16(payload)
-        return dict(out, payload=payload, header_ok=header_ok, crc_ok=crc_ok, end=out["start"] + frame_samples(plen, sf, os_, cr, preamble, has_crc))
+        return dict(out, symbols=seen, payload=payload, header_ok=header_ok, crc_ok=crc_ok, end=out["start"] + frame_samples(plen, sf, os_, cr, preamble, has_crc))
 
     # the offset is known modulo N / 2 bins only (it comes from the sum of two measurements): try the other candidate if the header does not check
     first = decode(off)
@@ -407,7 +424,7 @@ def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max
     return second if second.get("header_ok") else first
 
 
-def demodulate_all(iq, fs, sf, bw, preamble=8, sync_word=0x34, max_frames=1000):
+def demodulate_all(iq, fs, sf, bw, preamble=8, sync_word=0x34, max_frames=1000, **kw):
     """All frames of a recording, in order: a list of the dicts of demodulate() with start/end as sample indices into iq."""
     out = []
     base = 0
@@ -415,7 +432,7 @@ def demodulate_all(iq, fs, sf, bw, preamble=8, sync_word=0x34, max_frames=1000):
     N = 1 << sf
     seg = iq
     while len(out) < max_frames and len(seg) > 12 * N * os_:
-        r = demodulate(seg, fs, sf, bw, preamble=preamble, sync_word=sync_word)
+        r = demodulate(seg, fs, sf, bw, preamble=preamble, sync_word=sync_word, **kw)
         if r is None:
             break
         end = r.get("end") or (r["start"] + 8 * N * os_)

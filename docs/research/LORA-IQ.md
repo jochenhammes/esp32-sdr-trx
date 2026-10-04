@@ -111,7 +111,43 @@ What decided it:
 * **The absolute frequency is off by 8 kHz** once the board has warmed up: `--ppm 5.4` was measured on the cold board; the carrier is 8.3 kHz (3.5 ppm) lower when it is hot. That is more than a quarter of the bandwidth at 31.25 kHz, which is where the receiver's offset estimate ends
   (it knows the offset only modulo half a bin count); `lora_phy.coarse_centre()` takes the band centre from the spectrum first. At 62.5 kHz the plan's own move of the centre (+8.4 kHz) happened to cancel it.
 
-## State (17:25)
+## L2: scheme W, a frame symbol by symbol (2026-10-04, 17:05 to 17:35)
 
-L0a, L0b, L1 (three variants) and L3 (SF5 to SF10 at 62.5 kHz, SF8 at 31.25 kHz) are done and gated. Not done: **L2 (scheme W)**, the ESP32 receiving narrow LoRa (needs a second transmitter: the Pluto, or a second board;
-two boards cannot be attached at once here), and the comparison table of L4 (below, preliminary).
+Research firmware (`firmware/protocol/iqtest.h`, `firmware/src/radio.c`): `IQ_OP_LDTGT` (87) lets the bulk load write the ring in bank 1 instead of bank 2, `IQ_OP_SYM` (88) / `IQ_OP_SYMCLR` (89) hold the frame as a list of symbol codes,
+`IQ_OP_LPAR` (91) takes the parameters (window length, words per chip, words played per symbol, symbol period in CPU cycles, repetitions, engine bits, fixed cost), `IQ_OP_LORA` (90) plays the list. Per symbol the chip copies the window of the ring that belongs to the symbol value
+(the base chirp is periodic in N chips, so the window of value k starts k chips in) into bank 2 **while the engine is idle**, waits for the symbol clock (the cycle counter), triggers the engine for `lp` words and waits for it. The end of every symbol is left out: the copy
+needs that time. The finished stream experiments (E1) are compiled out (`-DESPDR_IQ_STREAM`) to make room in core 0's code region. Host: `run.py wsend`, with the ring rendered from the continuous chirp formula, so the fractional oversampling (24.615 words per chip at BW 1.625 MHz) is no problem.
+
+Numbers: SF5, BW 1.625 MHz (a real SX1280 bandwidth), 12 bytes, 51 symbols of 19.69 us = a 990 us frame (the plan's 1 ms; a 20 ms frame of the same bytes at BW 812 kHz would be 2 ms). Copying 788 words takes **1992 CPU cycles (8.3 us)**, the period is 4726 cycles, so the engine can play
+**414 to 430 of 788 words (0.53 to 0.55 of every symbol, -2.8 dB)**; with 60 cycles of reserve every symbol is late, with 150 none. The quarter down-chirp of the SFD is a quarter symbol of silence (a copy of the next window did not fit into a quarter period, and the receiver does not use it).
+
+**Result (Pluto gain 26 dB, 1000 repetitions, 216 frames in the capture): 177 frames decoded with the right bytes and CRC, 0 late triggers.** The 39 failures are mostly one symbol off by one bin (value 24 at two positions).
+Findings on the way: (1) with the bare 48 % play fraction (380 words) the receiver failed on whole classes of symbol values although an offline model of the firmware decoded: below half a symbol the dechirped peak of the truncated symbol is wider than the receiver's offset estimate tolerates;
+at 414 words the same model decodes 30 of 30 at every carrier offset I tried. (2) An offset calibration on the sync symbols made it worse (37 of 80 against 62 of 80), because their wrap lies inside the played part.
+**Threshold** (real capture with white noise added, 177 frames): SNR from the pauses 8.8 dB as captured (it does not rise with the Pluto's gain: the gating of the symbols splatters into the band; scheme S has 37 to 57 dB), 49 % packet loss at 8 dB, 98 % at 6 dB, 100 % at 4 dB: **about 6 dB worse than the ideal chain (1.8 dB) and 4 to 5 dB worse than the plan's hypothesis (L0b)**.
+**Gate L2 (CRC-ok frames within about 3 dB of the model): not passed**, but the mechanism works on the chip: a frame of more than 400 us, written symbol by symbol with a locked symbol clock, decodes.
+
+What would change the number: a second core that copies the next window while the first plays it (not possible: bank 2 cannot be rewritten while it plays, see DESIGN-IQ-TX.md), a smaller window (play only the part of the symbol that is needed: the FFT of a truncated symbol does not need the whole chirp, but a longer play fraction helps),
+and a receiver that matches the truncated symbol (a correlation against the 32 ideal truncated waveforms instead of a dechirp FFT).
+
+## L4: comparison (all with the same payload class, Pluto as the receiver, numpy receiver)
+
+| Scheme | Parameters | Frame | Decoded on the air | SNR for 50 % loss | Against the ideal chain | SNR of the signal itself |
+|---|---|---|---|---|---|---|
+| S (one buffer) | SF5, BW 4 MHz, 40 Msps, 12 B | 402 us | 93 of 93 | 2.9 dB | +1.1 dB | 37 to 57 dB |
+| S | SF5, BW 8 MHz, 80 Msps, 12 B | 201 us | 37 of 37 | 3.2 dB | +1.4 dB | 40 to 47 dB |
+| S | SF5, BW 8 MHz, 40 Msps, MeshCore raw 7 B, preamble 32, CR 4/8 | 305 us | 33 of 33 | -- | -- | 34 dB |
+| W (symbol by symbol) | SF5, BW 1.625 MHz, 12 B | 990 us | 177 of 216 | about 8 dB | about +6 dB | 8.8 dB |
+| P (polar) | SF5..SF8, BW 62.5 kHz, 13 B | 41 to 165 ms | all frames | SF8: -6 dB | about +3 dB (rough, 8 frames) | 28 dB |
+| P | SF9, SF10, BW 62.5 kHz | 330 / 660 ms | 6 of 6 each (with the drift-following receiver) | -- | -- | 22 to 26 dB |
+| P | SF8, BW 31.25 kHz | 330 ms | 6 of 6 | -- | -- | -- |
+| P | SF10, BW 31.25 kHz | 1.3 s | 0 of 4 | -- | -- | drift of 1 to 2 bins per frame is more than the receiver follows |
+
+**What this gives as a statement of the product** (if the numbers are confirmed on another board): the playback engine sends a complete LoRa frame of up to about 400 us (12 bytes at BW 4 MHz, 24 bytes at BW 8 MHz and 40 Msps) as a clean burst that a
+numpy receiver (not a standard LoRa chip: SF5 and BW 4 or 8 MHz are not LoRa bandwidths) decodes 1 dB from the ideal; frames up to 1 ms at a real SX1280 bandwidth (1.625 MHz) can be written symbol by symbol but lose about 6 dB; and narrow LoRa (62.5 kHz, SF5 to SF10) goes through the ordinary polar transmitter with a receiver that follows the board's drift.
+Not tested: any real LoRa chip as receiver, the ESP32's own receiver on narrow LoRa (needs a second transmitter at 13 cm), and other boards.
+
+## State (17:35)
+
+L0a, L0b, L1 (three variants), L2 and L3 are done; L4 is the table above. Open: the ESP32 receiving narrow LoRa, a real SX128x as the receiver (the only way to check the SF5 and SF6 rules and the 1.625 MHz frame against the standard),
+better synchronisation on truncated symbols, and merging the research ops into `main` if wanted (`TX_OP_RANGE`, `-m lora`, `lora_phy.py` are product-side code on this branch; the `IQ_OP_*` ops are research-only).
