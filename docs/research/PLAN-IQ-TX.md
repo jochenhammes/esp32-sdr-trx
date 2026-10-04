@@ -1,69 +1,80 @@
-# Plan: does the ESP32-S3 have a direct I/Q transmit input?
+# Plan: raw I/Q transmit on the ESP32-S3 (reproduce, then build)
 
-Working plan for the hardware sessions. Status: Phase 1 (disassembly) is done in part, Phase 2 and 3 need the board and a PlutoSDR/HackRF.
-Background: [TX-RESEARCH.md](TX-RESEARCH.md) (Stages 3 to 5), register list: [REGISTER-MAP.md](REGISTER-MAP.md).
+**Status (revised after h0m3us3r's report).** The question "does the S3 have a direct I/Q transmit input?" is answered by someone else's measurement: yes, a playback engine at `0x60033D64`
+reads 32-bit words from capture bank 2 (`0x3FCD0000`) and feeds the TX DAC at 40 or 80 Msps ([Stage 6 in TX-RESEARCH.md](TX-RESEARCH.md#stage-6-raw-iq-transmit-confirmed-by-h0m3us3r-reported-not-yet-reproduced-here),
+original: eSpDR issue #3). It matches our own finding of `dactrig` in the S3 library (Stage 5). **We have not measured it yet.** The earlier plan (register fuzzing, snapshot diffs, mux hunting, OFDM fallback) is obsolete and was removed.
+Everything marked *reported* below comes from that report and must be reproduced before it is written into the user documentation as fact.
 
-## Where we are
+Known facts to build on (all *reported* until reproduced):
 
-* Stage 3: the test-tone registers `0x60006040/44` are not an I/Q input (negative).
-* Stage 4: the PHY libraries have no SRAM transmit path in the *named* test functions; C5/C6 `fedump_wr_txmem` are empty stubs.
-* **Stage 5: `mac_common:dactrig` in the S3 library programs `0x60033D64`, an engine that plays SRAM (`0x3FCD0000`) to the DAC.** Bits, as inferred: 13:0 length,
-  15 mode (0 when arg3 == 1), 19 option, 27:20 second field, 31 start, 18 done. Unknown: base address register, sample format, rate, routing to the RF transmit chain.
-  A Reddit commenter says other ESP32 chips have arbitrary I/Q TX with samples read from SRAM; `dactrig` exists on S2, S3, C3, C6, C5, C2, H2.
+* `0x60033D64`: bits 13:0 = count - 1 (max 16383), bit 15 = rate (0: 40 Msps, 1: 80 Msps), bit 18 = done (read-only, valid while run is set), bit 19 = hold (blocks the start), bit 31 = run. No loop mode.
+* Word format: I in bits 9:0, Q in bits 19:10, 10-bit two's complement. Source: bank 2, up to 16384 words (204.8 us at 80 Msps). 32-bit accesses only.
+* Sequence: key the chain (`phy_txtone_start`-equivalent, receive-only PBUS state released), then `0x600C101C = 0x4` (keying clears it), write samples, write `(count-1) | 1<<15`, then set bit 31 in a second write, poll bit 18, clear run, repeat. Re-trigger from the MCU.
+* Bank 3 overlaps the ROM's data (`rom_phyFuns` at `0x3FCEF3D4`); using it needs the same save/restore as our receive path.
+* Seam when re-triggering: about 240 ns (poll-done) or 128 ns (computed delay). Phase noise of the PLL limits coherent high-order modulation (EVM floor 28 % per 179 us OFDM symbol); constant-envelope and non-coherent schemes are fine.
+* The 5/6 LO mode (CKGEN block 0x65 register 0 bit 0x10) works on TX: about 1.84 to 2.79 GHz of coverage for about 5 dB.
 
-## Hypotheses
+Why this changes the current code: `firmware/protocol/transmit.h` uses capture banks 0..2 as the ring (`TX_RING_BYTES`), which collides with bank 2 as the playback buffer; the keyed state comes from
+`start_tx_tone_step(1, 0, g, 0, 0, 0)` in `radio_tx_run()`, which the report says writes I = Q = 0 with the enable bit.
 
-* **H1 (main)** `0x60033D64` is the DAC playback engine; it needs the TX chain keyed (as in Stage 2) and an SRAM buffer.
-* **H2** The TX baseband source mux (bit 26 of `0x60006000`, bit 10 of `0x600061E4`, `txcal_debuge_mode`/`force_txon_mode`) decides whether the DAC input is the modem or the playback engine.
-* **H3** The ADC dump engine (`0x60033D5C/60/90`, `0x600C101C`) has a TX tap or shares the bank base with the playback engine.
-* **H4** The C6 `set_dump_mode` registers (`0x600A0958`, `0x600A70B8`) have a counterpart on the S3.
+## Phase A: reproduce (smallest possible test, needs the board and a PlutoSDR or HackRF)
 
-## Phase 1 remainder (no board needed)
+Use the TX research build (`make -C esp32s3 NARROWBAND=1 TXTEST=1`, loaded to RAM with `espdr_load.py`, a reset restores the flash image; see the notes in `TX-RESEARCH.md`). Add a research op, for example `radio_tx_iq_test()` next to `radio_tx_test()` in `firmware/src/radio.c`:
 
-1. Read every place that touches `0x60033D5C..0x60033D90` and `0x600C101C` in the libraries (`mac_common`, `bb_common:tx_a_frame` which uses `0x60033D84`, `wifi`, `rf_test`).
-   Goal: find the base-address register and the sample format.
-2. Disassemble `txiq_set_reg`, `txiq_cover`, `rfcal_txiq`, `txdc_cal_*`, `force_txon_mode`, `tx_cont_cfg`, `tx_contin_en`, `wifitxout_func`, `WifiTxStart` for the TX source mux.
-3. Compare `dactrig`/`adctrig` and the callers on C3 and S2 (same family) for the register layout; the C6 build lacks the register part.
-4. Dump the S3 ROM (`esptool dump_mem`) and look for the console command that calls `dactrig`; the ROM/test console shows the arguments (`a2..a5`).
-5. Toolchain: ESP crosstool-NG `xtensa-esp-elf` (objdump), `esp-phy-lib` for the `.a` files (see Stage 4 notes: `ar x`, then `objdump -dr`).
+1. Same bring-up as Stage 2: `tune_pll()`, `txcal_debuge_mode()`, `tune_pll()` again, key with `start_tx_tone_step(1, 0, g, 0, 0, 0)` (also try the library's `phy_txtone_start`). Release the receive-only state first.
+2. `0x600C101C = 0x4` (after keying), 16384 words in `0x3FCD0000` with a +5 MHz complex tone at amplitude about 400 (I = A cos, Q = A sin, 80 Msps), 32-bit stores.
+3. Write `16383 | 1<<15`, then bit 31; poll bit 18; clear run; loop for 500 ms. Keep the firmware limits (2320..2400 MHz, short bursts, lowest gain).
 
-## Phase 2: tools on the board
+Acceptance (each its own measurement, PlutoSDR at 50 cm as in Stage 2, 3 Msps, centre at the LO):
 
-Firmware is bare-metal (`firmware/src/startup.S`, `main.c`, `radio.c`), loaded into RAM (`espdr_load.py`), a reset restores the old state.
+| Test | Expected (reported) |
+|---|---|
+| +5 MHz complex tone | line at LO + 5 MHz (+ about 40 kHz crystal offset), opposite sideband 44 dB or more down |
+| clear bit 15 | the line moves to LO + 2.5 MHz |
+| swap sign of Q | the line moves to LO - 5 MHz |
+| constant word | carrier at the LO (DC offset), level proportional to the amplitude |
+| bank 2 not granted (`0x600C101C` other value) | silence |
+| chain not keyed | silence |
 
-1. **Peek/poke op** in the USB control protocol (`firmware/protocol/control.h`, `main.c`) plus `host/python/espdr_reg.py`: read/write one register, read a block, with a deny list (flash, RTC, reset).
-2. **Measurement script** for the PlutoSDR (3 Msps, centre 2349.5 MHz as in Stage 2): carrier level, offset, spectrum, burst length; one command per experiment; second look with the HackRF.
-3. **Register snapshots** of `0x60005000..0x60008FFF`, `0x6000D000..0x6000EFFF`, `0x6001C000..0x6001FFFF`, `0x60026000..0x60027FFF`, `0x60033000..0x60036FFF` in these states:
-   reset, receiver running, test tone on, `dactrig` sequence run, normal Wi-Fi burst. Diff them. Protect against bus hangs (read in small blocks, watchdog).
-4. **SRAM-pointer search:** with an engine running, scan the registers for values in `0x3FC8_0000..0x3FCF_FFFF`; these are DMA address registers.
+Do the Pluto check at +-2.5/5/10 MHz (inside its 3 Msps window with a wider setting, or retune), and the high offsets (+-20, +-35 MHz) with the HackRF (20 Msps) or a second tuning. Stop rule: if the +5 MHz line does not appear after the variants
+above (bit 15 set/clear, with and without hold bit, banks 0 to 2 granted in turn, bank 3 never), write the log into TX-RESEARCH.md and ask h0m3us3r for the exact register sequence.
 
-## Phase 3: experiments (stop rule: about one day per hypothesis)
+**Gate:** Phase A passes -> continue. Fails -> document, ask, do not build further.
 
-* **E1 (H1)** Reproduce Stage 2 (carrier from `radio_tx_test`). With the carrier on, run the `dactrig` register sequence from our firmware with a constant buffer at `0x3FCD0000`:
-  all zero, then a constant, then the library's ramp. Does level, phase or offset of the carrier change? Run both values of bit 15 and bit 19.
-* **E2** Buffer with a sine of known frequency, as I/Q word pairs and as one real value; look for a line that moves when the pattern frequency changes. Vary bits 27:20 (rate).
-* **E3 (H2)** If E1 and E2 show nothing, change the source mux (bit 26 of `0x60006000`, bit 10 of `0x600061E4`, `txcal_debuge_mode`, `force_txon_mode`) and repeat.
-* **E4 (H3)** Vary `DUMP_CONFIG_REG` and `0x600C101C` bits (source, bank) with a pattern in the bank.
-* **E5 (H4)** Probe the C6 counterpart registers one or two bits at a time, measuring after each step.
-* **E6** Write down what was found: format, rate, buffer length, latency, start/stop behaviour.
+## Phase B: characterisation (hardware, after A)
 
-Safety: stay in 2320..2400 MHz (the firmware refuses anything else), keep every transmission short (5 s as before), lowest gain, receiver with attenuation, no experiments on flash, reset or RTC registers.
-A licence is required; read [the transmitter guide](../transmitter.md).
+1. Level: amplitude and gain code `0x60006040[17:10]` against output power; IM3 with two tones as a function of gain (reported 10 to 13 dBc at the default gain).
+2. Flatness and image: 20 MHz band-limited noise ripple, image and LO feedthrough rejection; is there a TX DC/I-Q correction register (the receive one is `0x6000607C`).
+3. Seam: measure re-trigger gap with poll-done and with a computed delay; check a buffer whose end matches its start (phase-continuous tone).
+4. Bits 27:20 of the control register, the other `0x60033D88..98` registers; whether `0x60033D8C` allows a second count/rate field.
+5. 5/6 LO mode on TX in our PLL plan (`firmware/src/lo_plan.h`, `tune_pll()`); coverage and spurs.
+6. Phase noise: carrier phase over 1, 10, 50, 179 us; optionally with an external reference at the crystal.
+7. Spectral purity and out-of-band emissions for the whole 80 Msps band: what leaves the antenna at +-40 MHz around the LO, harmonics, the 5/6 mode. This decides how wide a waveform may be used inside the 13 cm amateur allocation.
 
-## Phase 4: decision
+## Phase C: product design (after A and B)
 
-* **Positive:** document the path (registers, bits, format, rate); minimal `radio_tx_iq()` with a ring buffer in SRAM; protocol and host tool in `firmware/protocol/transmit.h` and `src/espdr/txlink.py`;
-  compare with polar modulation (unwanted sideband 61 to 63 dB, third-order intermodulation 33 dB); then update README/docs and answer the Reddit comment.
-* **Negative:** record every tested register and bit with its measurement in `TX-RESEARCH.md` (Stage 6); change the README wording to "investigated systematically, no I/Q input found".
-* **Fallback:** Wi-Fi OFDM as a waveform generator (invert scrambler, FEC, interleaver and QAM mapping to put chosen subcarrier values in a normal packet; a known technique for emulating ZigBee/BLE with Wi-Fi). Not a free I/Q input, but wideband waveforms the polar method cannot make.
+Design questions, with what is known:
+
+* **No loop mode and 204.8 us per buffer.** Continuous modulation is a train of buffers with a 128 to 240 ns gap. Host streaming at 80 Msps is impossible over USB (the narrowband link carries about 0.87 MB/s, `docs/internals.md`), so useful modes are *generated on the chip*: a periodic waveform
+  (tones, chirps, an OFDM symbol with cyclic prefix, preamble patterns), a table of precomputed buffers selected by a small control stream (FSK, LoRa chirp symbols, FT8/WSPR tones, POCSAG), or a lower-rate stream that the MCU upsamples into the buffer (SSB/FM at narrowband would need an NCO and an interpolator in software; check the CPU budget on the two cores).
+* **Compare with the polar method** (FM/SSB, `docs/transmitter.md`): keep polar as the default for voice until a buffer-based mode beats it on unwanted sideband (61 to 63 dB) and IM3 (33 dB).
+* **Memory layout:** bank 2 is the playback buffer, the host ring must move to banks 0 and 1 (`TX_RING_BYTES` becomes 2 x 64 KiB), bank 3 stays off limits unless the ROM data save/restore of the receive path is reused.
+* **Protocol:** a new op set next to `TX_OP_*` in `firmware/protocol/transmit.h` (load buffer, set rate bit, start/stop burst, status) and a mode in `src/espdr/txlink.py` / `txmodes.py`; tests in `tests/test_modes.py` and the simulator `src/espdr/sim.py`.
+* **Legal limits:** the firmware limit 2320..2400 MHz has to apply to every emitted line, not only to the LO: LO +- up to 40 MHz, image, LO feedthrough, and for the 5/6 mode the real output frequency. Default to a cabled, attenuated setup; keep the licence text in `docs/transmitter.md`.
+
+## Phase D: documentation (do now for the wording, finish after A)
+
+1. README, `docs/transmitter.md`, `docs/internals.md`: the Stage-4 wording "no I/Q transmit input was found" is now wrong; say "an I/Q playback engine exists (reported by h0m3us3r, SRAM, 80 Msps); this project's transmitter uses polar modulation, and I/Q mode status: ..." once Phase A has run.
+2. `TX-RESEARCH.md`: Stage 6 is in; add Stage 7 with our own Phase A/B results and logs.
+3. Credit: h0m3us3r (eSpDR) for the engine, the bank-3 warning and the measurements; the commenter on the Reddit post for the hint.
+4. Reply on Reddit/eSpDR: thank, say the plan is to reproduce and extend; share the REGISTER-MAP and the `dactrig` disassembly note.
 
 ## Verification rule
 
-A hypothesis counts as confirmed only when the measured spectrum depends on the data written (change the data, the signal changes accordingly), seen on the PlutoSDR and repeated with the HackRF.
-A negative result counts only with a written measurement log (register, value, measurement, noise floor).
-Run `pytest` (including `tests/test_docs.py`) before committing.
+A statement moves from *reported* to *reproduced* only after our own measurement shows the spectrum following the data written (change the data, the line moves or changes accordingly), on the PlutoSDR and repeated with the HackRF. Negative results need a log (register, value, measurement, noise floor).
+Run `pytest` (`tests/test_docs.py` checks the docs) before every commit; firmware changes must still build with the CI target.
 
 ## Key files
 
-`firmware/src/board.h` (add register definitions), `firmware/src/radio.c` (`radio_tx_test`, `tune_pll`: template for test routines), `firmware/src/main.c`, `firmware/protocol/control.h` (peek/poke),
-`host/python/espdr_txtest.py`, `espdr_load.py` (runs, RAM load), new `espdr_reg.py`, `docs/research/TX-RESEARCH.md`, `REGISTER-MAP.md`.
+`firmware/src/radio.c` (`radio_tx_test`, `radio_tx_begin`, `radio_tx_run`, `tune_pll`), `firmware/src/board.h` (`DUMP_*`, new `DAC_PLAY_*` definitions), `firmware/protocol/transmit.h`, `firmware/src/lo_plan.h`,
+`src/espdr/txlink.py`, `src/espdr/txmodes.py`, `host/python/espdr_txtest.py`, `host/python/espdr_load.py`, `docs/research/TX-RESEARCH.md`, `docs/research/REGISTER-MAP.md`.

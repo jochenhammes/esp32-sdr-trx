@@ -370,7 +370,11 @@ An SRAM-fed path, if it exists, would have to be driven by direct register acces
 Next steps (need hardware): compare the S3 register space around `0x6001Cxxx` and `0x6000Axxx` with the C6 `set_dump_mode` registers; dump registers before and
 after a normal `WifiTxStart` and diff them; ask the commenter which chip and registers they use.
 
-## Stage 5: `dactrig`, a DAC playback engine fed from SRAM (static analysis, hardware test pending)
+## Stage 5: `dactrig`, a DAC playback engine fed from SRAM (static analysis; confirmed by h0m3us3r, not yet reproduced here)
+
+> **Update.** h0m3us3r (eSpDR issue #3) measured this engine on an ESP32-S3 and confirmed it: raw I/Q transmit from SRAM at 40 or 80 Msps. The bit meanings
+> in the list below, which were inferred from the disassembly, are **corrected in [Stage 6](#stage-6-raw-iq-transmit-confirmed-by-h0m3us3r-reported-not-yet-reproduced-here)**
+> (bit 15 is the rate, bit 19 is a hold bit, bits 13:0 are the word count minus 1). Use Stage 6, not the list below, as the reference.
 
 Result of the first pass of the disassembly plan. The register map from the PHY libraries is in [REGISTER-MAP.md](REGISTER-MAP.md). Static only,
 **nothing here is measured yet**; every bit meaning below is inferred from instruction sequences.
@@ -410,3 +414,53 @@ On C6, `dactrig` is reduced to the ramp fill (`0x40840000`) and the print: the r
    Try both word formats and both values of bit 15.
 3. Dump `0x60033D5C..0x60033D90` before and after `dactrig` to find the registers it leaves changed (base, rate), and diff against an idle snapshot.
 4. If the DAC output only goes to the loopback path (calibration), look for the TX mux: bit 26 of `0x60006000`, bit 10 of `0x600061E4`, `txcal_debuge_mode()`, `force_txon_mode`.
+
+## Stage 6: raw I/Q transmit, confirmed by h0m3us3r (reported, not yet reproduced here)
+
+Source: h0m3us3r, comment on eSpDR issue #3 (one ESP32-S3-WROOM-1, 40 MHz crystal, PCB antenna, B205mini as receiver). **These are another person's measurements.
+They are listed here as the working hypothesis for our own tests and are marked "reproduced" in [PLAN-IQ-TX.md](PLAN-IQ-TX.md) only when we have measured them.**
+They also settle the question of this document: the S3 *does* have an I/Q transmit input. The Stage 3 conclusion about `0x60006040/44` stays correct (see below).
+
+**The engine** is `0x60033D64`, the twin of the capture control `0x60033D5C`. Implemented bits: `0x8FF8BFFF`.
+
+| Bits | Meaning |
+|---|---|
+| 13:0 | word count minus 1 (14 bits; 16384 wraps to 0 and never completes) |
+| 15 | rate: 0 = 40 Msps, 1 = 80 Msps |
+| 18 | done, read-only, valid only while run is set |
+| 19 | hold: set it and nothing starts |
+| 31 | run |
+| 16, 17 | not implemented here (they are the capture channel's rate and circular bits), so **no looping mode** |
+| 27:20 | implemented, no effect found |
+
+* **Source:** capture bank 2 at `0x3FCD0000`, up to 16384 words, effectively fixed. One 32-bit word per sample, **I in bits 9:0, Q in bits 19:10, 10-bit two's complement**, the same packing as the capture. A constant word is a DC offset and comes out as a carrier.
+* **Banks:** 0, 1 and 2 are free. Bank 3 overlaps the ROM's working data (`rom_phyFuns` at `0x3FCEF3D4`) and needs the same save and restore as our receive path, otherwise the next PHY call jumps through the samples (crashed the chip twice).
+* **Access:** 32-bit accesses only.
+
+**To make it transmit**
+
+1. Key the chain with `phy_txtone_start(mhz, 0, power)` from `libphy` (Stage 2 does the equivalent). If the firmware forces receive-only (analog stages owned over PBUS, both TX groups off), release that first, or nothing radiates. Keying moves PBUS (4,1) and (5,1) from 0 to 127. Not keyed: dead.
+2. Keying clears `0x600C101C`; grant bank 2 **after** keying: `0x600C101C = 0x4`. Granting another bank silences the output.
+3. Write the samples to `0x3FCD0000`.
+4. Write `(count-1) | (1 << 15)`, then set bit 31 in a **second** write. Poll bit 18, clear run, repeat.
+5. The TX DAC input mux (`0x60006000` bit 26, `0x600061E4` bit 10) and the extra `0x60026014` clock bits change nothing. Re-trigger from the MCU: a host-side trigger loop that shared a process with the SDR capture starved the stream.
+
+**Why Stage 3 looked the way it did.** The fields at `0x60006040/44` are a constant I/Q injection; the PHY's tone writes I = Q = 0 with only an enable bit set, so the "carrier" we measured is LO
+feedthrough through a keyed chain. Bit 18 of `0x60006040` is the enable (`stop_tx_tone` clears exactly that bit), which is why odd values of the field `a` transmitted and even ones did not.
+
+**Reported measurements** (LO 2440 MHz, 16384 words, amplitude 400/511):
+
+* Tones at +-2.5, +-5, +-10, +-20 and +-35 MHz land exactly where commanded, +57 to +71 dB over the noise, with a constant offset of about +40 kHz (this board's 16 ppm crystal). Clearing bit 15 halves every frequency.
+  Opposite sideband 44 to 54 dB down: a true complex input.
+* One buffer with I = cos(2 pi 35 MHz t), Q = 0, written once: lines at 2405.04 MHz (+45.8 dB) and 2475.04 MHz (+49.6 dB), nothing at 2460 MHz: 70 MHz apart from one 80 Msps stream.
+* 20 MHz of flat band-limited noise with 1.7 dB ripple. Two tones: IM3 10 to 13 dBc at the PHY's default tone gain; back off `0x60006040[17:10]` for anything with a varying envelope.
+* The 5/6 LO mode works on TX as well (same CKGEN bit as the receive extension, block 0x65 register 0 bit 0x10): PLL 2400 MHz with a +5 MHz tone gives 2405.04 MHz at +66.2 dB and 2005.03 MHz at +61.5 dB, the old line down to +26 dB. About 1.84 to 2.79 GHz of TX coverage for about 5 dB.
+* **Continuous output:** no loop mode, so re-trigger. Seam on the air: 19 TX samples (about 240 ns) with poll-done, 6 samples (about 128 ns) with a computed delay (a short delay truncates the buffer tail). Rewriting run without clearing does not restart it sooner.
+  That is 0.04 to 0.1 % of a 204.8 us buffer. No double-buffer or chained mode found: `0x60033D88`, `0x60033D8C` (mask `0xBFFFBFFF`, perhaps two count/rate fields), `0x60033D94` (fully writable), `0x60033D98` read 0 and changed nothing over a twelve-case sweep.
+  A cyclic prefix, or a buffer whose start matches its end, hides the seam.
+* **What limits modulation is the PLL, not the DAC:** OFDM over 40 MHz demodulates, but EVM floors at 36 to 45 % rms, the same for 16-QAM through 4096-QAM and for 2.5 to 20 MHz bandwidth. Carrier phase noise within one 179 us OFDM symbol is 0.283 rad rms (28 % EVM);
+  0.202 rad at 50 us, 0.144 at 10 us, 0.109 at 1 us. Constant-envelope and non-coherent schemes are unaffected, which matches our FM/SSB results.
+* Not characterised by h0m3us3r: power calibration, TX DC/IQ correction registers (`0x6000607C` is the receive one), what bits 27:20 do, whether phase noise improves with an external reference.
+
+**Corrections to Stage 5.** The bit meanings listed there were guesses from instruction sequences and were partly wrong: bit 15 is the rate (not a mode), bit 19 is hold (not a loop option), bits 13:0 are count minus 1.
+The base address `0x3FCD0000` is bank 2 and effectively fixed, so the "base address register" question is closed. The ramp loop in the library is test code and says nothing about the sample format.
