@@ -722,7 +722,7 @@ extern int txtone_linear_pwr(void);
 
 static struct {
     bool begun, keyed;
-    int32_t rot_cos, rot_sin;
+    int32_t rot_cos, rot_sin, pre_g, pre_p;
     uint32_t addr, ms, last_op, play_bits;
 } iq = {.ms = 100, .play_bits = 16383u | (1u << 15)};
 
@@ -768,6 +768,10 @@ static uint32_t iq_fill(unsigned amp, unsigned mode)
             continue;
         default:
             break;
+        }
+        if (mode == IQ_MODE_ROTATOR || mode == IQ_MODE_REAL) {
+            int64_t q2 = (((int64_t)q * (65536 + iq.pre_g)) >> 16) + (((int64_t)i * iq.pre_p) >> 16);
+            q = q2 > 511 ? 511 : q2 < -512 ? -512 : (int32_t)q2;
         }
         bank2[n] = ((uint32_t)i & 0x3FFu) | (((uint32_t)q & 0x3FFu) << 10);
         int64_t nr = (zr * iq.rot_cos - zi * iq.rot_sin) >> 30, ni = (zr * iq.rot_sin + zi * iq.rot_cos) >> 30;
@@ -854,6 +858,18 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
         *value = (uint32_t)sum;
         return CTL_OK;
     }
+    case IQ_OP_PRE_G:
+        iq.pre_g = (int32_t)arg;
+        return CTL_OK;
+    case IQ_OP_PRE_P:
+        iq.pre_p = (int32_t)arg;
+        return CTL_OK;
+    case IQ_OP_ANA_RD:
+        *value = esp_rom_regi2c_read(((arg >> 8) & 0xFF), ((arg >> 24) & 15) ? ((arg >> 24) & 15) : 1, arg & 0xFF);
+        return CTL_OK;
+    case IQ_OP_ANA_WR:
+        esp_rom_regi2c_write(((arg >> 8) & 0xFF), ((arg >> 24) & 15) ? ((arg >> 24) & 15) : 1, arg & 0xFF, (arg >> 16) & 0xFF);
+        return CTL_OK;
     case IQ_OP_PBUS_RD:
         *value = rom_pbus_rd((arg >> 4) & 15, arg & 15) & 511;
         return CTL_OK;

@@ -158,3 +158,37 @@ filter limits it (digital or analog TX baseband filter), whether it can be widen
 measurements, so the verification rule of PLAN-IQ-TX.md ("repeated with the HackRF") is met for the engine itself: **reproduced on two receivers**. Still open from
 the plan: Phase B characterisation (roll-off beyond 10 MHz, image rejection, gain dependence, IM3, seam, phase noise), and the +-35 MHz case which needs the Pluto's
 re-centring (the HackRF covers +-10 MHz).
+
+## Phase B, step 1 and 2: the roll-off is a filter register, the image is correctable in software (2026-10-04)
+
+**Roll-off (flat response).** The drop at large offsets is the same at LO 2350, 2420 and 2440 MHz and symmetric around the LO, so it is a baseband low-pass and not the RF matching.
+A scan of all 16 registers of the analog block `0x67` (each set to 0 and to 0x3F, tone at +20 MHz) found it: **registers 12 and 13 (default 0x23 each) are the TX filter capacitor codes**.
+(Register 2 must not be written: 0 makes the signal vanish, -32 dB. Registers 4..11, 14, 15 had no effect on the TX tone; 4..7 are the RX filter.) Frequency response, LO 2350 MHz, Pluto, complex tone, level over the noise:
+
+| Code in regs 12 and 13 | 2.5 | 5 | 10 | +20 | -20 | 30 | +35 | -35 MHz |
+|---|---|---|---|---|---|---|---|---|
+| 0x23 (default) | 67.4 | 66.2 | 63.7 | 34.5 | 38.3 | 13.8 | 7.3 | 8.0 |
+| 0x10 | 67.2 | 65.4 | 63.7 | 61.8 | 65.0 | 38.6 | 31.0 | 31.5 |
+| 0x08 | 66.9 | 65.8 | 63.9 | 63.6 | 67.0 | 57.5 | 49.0 | 49.5 |
+| **0x00 (widest)** | 66.9 | 65.7 | 64.0 | 63.5 | 66.9 | 64.0 | **69.6** | **70.3** |
+
+With code 0 the output is flat within +-3 dB from 2.5 to 35 MHz, the same +57..71 dB as in the original report. `Esp.tx_filter(0)` in `scripts/iqtest.py` does it.
+(The registers keep their value until written again, hard-reset the chip or write 0x23 back to return to the default.)
+
+**Image (opposite sideband).** Measured 27 to 33 dB down with the default I/Q path (2.5 MHz: 33 dB, 20 MHz: 27 dB). The low bits of `0x6000607C`
+(`txiq_set_reg`: amplitude field bits 4:0, phase field bits 10:5) have no effect on it at all (swept over their full range: 33 dB everywhere). The imbalance is in the analog path, so it is
+corrected in the samples instead: `Q' = (1 + g) Q + p I` inside the buffer generator (`IQ_OP_PRE_G`, `IQ_OP_PRE_P`, `Esp.predistort`). A pattern search with the Pluto as feedback
+(28 trials, about 2 minutes) found **g = +0.010, p = -0.055**:
+
+| Tone | Image without correction | Image with g = +0.010, p = -0.055 |
+|---|---|---|
+| 2.5 MHz | 33 dB down | **62 dB** (noise-limited) |
+| 5 MHz | 33 dB | **62 dB** (found at this tone) |
+| 10 MHz | 29 dB | 50 dB |
+| 20 MHz | 27 dB | 44 dB |
+| 35 MHz | 28 dB | 45 dB |
+
+A constant correction already beats the original report (44 to 54 dB); the residual that grows with frequency would need a frequency-dependent (filter) correction. The values belong to this board and LO, they
+are not universal constants.
+
+Remaining for Phase B: level against amplitude and gain code (and what limits the output power), IM3 with two tones, the seam between buffers, phase noise.

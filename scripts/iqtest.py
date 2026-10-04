@@ -26,6 +26,7 @@ from espdr import board, nb, txlink  # noqa: E402
 
 IQ_OP_BEGIN, IQ_OP_KEY, IQ_OP_GAIN, IQ_OP_ROT_COS, IQ_OP_ROT_SIN, IQ_OP_FILL, IQ_OP_MS, IQ_OP_PLAY, IQ_OP_END = 50, 51, 52, 53, 54, 55, 56, 57, 58
 IQ_OP_ADDR, IQ_OP_POKE, IQ_OP_PEEK = 59, 60, 61
+IQ_OP_KEY2, IQ_OP_PBUS_RD, IQ_OP_PBUS_WR, IQ_OP_KEY_RAW, IQ_OP_PWR, IQ_OP_ANA_RD, IQ_OP_ANA_WR, IQ_OP_PRE_G, IQ_OP_PRE_P = 62, 63, 64, 65, 66, 67, 68, 69, 70
 MODE_ROTATOR, MODE_REAL, MODE_CONST, MODE_ZERO = 0, 1, 2, 3
 WORDS = 16384
 IMAGE = ROOT / "firmware" / "build-iq" / "iq-source.bin"
@@ -189,6 +190,18 @@ class Esp:
 
     def end(self):
         self.c(IQ_OP_END)
+
+    TX_FILTER_BLOCK, TX_FILTER_REGS = 0x67, (12, 13)   # analog block of the baseband filter; regs 12 and 13 are the TX filter capacitor codes (default 0x23 = 20 MHz channel)
+
+    def tx_filter(self, code):
+        """0 = widest (flat to +-35 MHz); 0x23 = default after reset (about 20 MHz, -28 dB at 20 MHz and -55 dB at 35 MHz)."""
+        for r in self.TX_FILTER_REGS:
+            self.c(IQ_OP_ANA_WR, code << 16 | self.TX_FILTER_BLOCK << 8 | r)
+
+    def predistort(self, g=0.0, p=0.0):
+        """Q' = (1+g) Q + p I applied by IQ_OP_FILL to complex and real tones (corrects the analog I/Q imbalance in software)."""
+        self.c(IQ_OP_PRE_G, int(round(g * 65536)))
+        self.c(IQ_OP_PRE_P, int(round(p * 65536)))
 
     def peek(self, addr):
         self.c(IQ_OP_ADDR, addr)

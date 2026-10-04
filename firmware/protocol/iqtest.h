@@ -23,6 +23,10 @@
 #define IQ_OP_PEEK 61  /* value: the 32-bit word at the address (addresses also in capture banks 0..2, 0x3FCB0000..0x3FCDFFFC) */
 #define IQ_OP_KEY_RAW 65 /* like KEY2 but with the receiver left configured (no BEGIN, no PBUS release, no PLL change); IQ_OP_END restores it. arg as KEY2 */
 #define IQ_OP_PWR 66     /* arg bit 0: trigger the engine (with the bits of the last IQ_OP_PLAY) around each reading. value: sum of 64 readings of the PHY's txtone_linear_pwr() (signed 16 bit each) */
+#define IQ_OP_ANA_RD 67  /* arg: host << 24 | block << 8 | register (analog I2C block, e.g. 0x67; host 0 means 1); value: its content */
+#define IQ_OP_ANA_WR 68  /* arg: host << 24 | value << 16 | block << 8 | register */
+#define IQ_OP_PRE_G 69   /* arg: signed Q16 gain error of Q for IQ_OP_FILL: Q' = (1 + g) * Q + p * I */
+#define IQ_OP_PRE_P 70   /* arg: signed Q16 I-to-Q leakage p (see IQ_OP_PRE_G) */
 #define IQ_OP_PBUS_RD 63 /* arg: block << 4 | index; value: the analog bus register (9 bits) */
 #define IQ_OP_PBUS_WR 64 /* arg: value << 8 | block << 4 | index */
 #define IQ_OP_KEY2 62  /* like IQ_OP_KEY but with the PHY's phy_txtone_start(mhz, 0, power): arg bits 15:0 mhz, 23:16 power, 31:24 bank grant */
