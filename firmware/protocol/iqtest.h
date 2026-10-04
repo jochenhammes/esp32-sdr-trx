@@ -29,6 +29,13 @@
 #define IQ_OP_PRE_P 70   /* arg: signed Q16 I-to-Q leakage p (see IQ_OP_PRE_G) */
 #define IQ_OP_ROT2_COS 71 /* second rotator for IQ_MODE_TWO, as IQ_OP_ROT_COS */
 #define IQ_OP_ROT2_SIN 72
+#define IQ_OP_STREAM_G 73   /* arg: pause between two buffers in 40 MHz samples, unsigned Q8 (added to the NCO phase at every buffer boundary) */
+#define IQ_OP_STREAM_INC 74 /* arg: NCO phase increment per 40 MHz sample, 2^32 = 40 MHz (signed) */
+#define IQ_OP_STREAM_INC2 75 /* arg: second increment; if not 0 odd buffers use it (a test that the content changes between buffers) */
+#define IQ_OP_STREAM 76     /* arg: amplitude 1..255. E1: the engine plays at 40 Msps for IQ_OP_MS ms while the CPU writes the next buffer behind the reader. value: bits 15:0 buffers played, 31:16 late words (saturating) */
+#define IQ_OP_BENCH 77     /* arg 0: cycles to write 16384 words from the lookup table (engine idle); 1: the same while the engine plays at 40 Msps; 2: the same at 80 Msps; 3: only the engine duration at 40 Msps (cycles) */
+#define IQ_OP_STREAM_CHECK 78 /* after IQ_OP_STREAM with an exact increment: compares bank 2 with the ideal tone continuing from word 0; value: bits 15:0 mismatching words, 31:16 index of the first one (0xFFFF none) */
+#define IQ_OP_WCHECK 79   /* arg 0: write 16384 words with the block writer (IQ_OP_STREAM_INC, amplitude 150) with the engine idle and check them; 1: the same with the engine playing at 40 Msps meanwhile; value as IQ_OP_STREAM_CHECK */
 #define IQ_OP_PBUS_RD 63 /* arg: block << 4 | index; value: the analog bus register (9 bits) */
 #define IQ_OP_PBUS_WR 64 /* arg: value << 8 | block << 4 | index */
 #define IQ_OP_KEY2 62  /* like IQ_OP_KEY but with the PHY's phy_txtone_start(mhz, 0, power): arg bits 15:0 mhz, 23:16 power, 31:24 bank grant */

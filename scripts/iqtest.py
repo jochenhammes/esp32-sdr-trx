@@ -28,6 +28,7 @@ IQ_OP_BEGIN, IQ_OP_KEY, IQ_OP_GAIN, IQ_OP_ROT_COS, IQ_OP_ROT_SIN, IQ_OP_FILL, IQ
 IQ_OP_ADDR, IQ_OP_POKE, IQ_OP_PEEK = 59, 60, 61
 IQ_OP_KEY2, IQ_OP_PBUS_RD, IQ_OP_PBUS_WR, IQ_OP_KEY_RAW, IQ_OP_PWR, IQ_OP_ANA_RD, IQ_OP_ANA_WR, IQ_OP_PRE_G, IQ_OP_PRE_P = 62, 63, 64, 65, 66, 67, 68, 69, 70
 IQ_OP_ROT2_COS, IQ_OP_ROT2_SIN = 71, 72
+IQ_OP_STREAM_G, IQ_OP_STREAM_INC, IQ_OP_STREAM_INC2, IQ_OP_STREAM, IQ_OP_BENCH, IQ_OP_STREAM_CHECK, IQ_OP_WCHECK = 73, 74, 75, 76, 77, 78, 79
 MODE_TWO = 5
 MODE_ROTATOR, MODE_REAL, MODE_CONST, MODE_ZERO = 0, 1, 2, 3
 WORDS = 16384
@@ -201,6 +202,19 @@ class Esp:
         self.c(IQ_OP_ROT_COS, round(math.cos(ph) * (1 << 30))); self.c(IQ_OP_ROT_SIN, round(math.sin(ph) * (1 << 30)))
         self.c(IQ_OP_FILL, amp | (mode << 16))
         return k * rate_msps * 1e6 / n
+
+    def stream_setup(self, f1, f2=None, gap_samples=0.0, ms=300):
+        """Experiment E1: configure the streaming writer (40 Msps). f2 (optional) is used for every second buffer."""
+        inc = lambda f: int(round(f / 40e6 * 2**32)) & 0xFFFFFFFF
+        self.c(IQ_OP_STREAM_INC, inc(f1)); self.c(IQ_OP_STREAM_INC2, inc(f2) if f2 is not None else 0)
+        self.c(IQ_OP_STREAM_G, int(round(gap_samples * 256))); self.c(IQ_OP_MS, ms)
+
+    def stream_start(self, amp):
+        self.link.send(IQ_OP_STREAM, amp)
+
+    def stream_result(self, timeout=10.0):
+        st, v = self.link._response(IQ_OP_STREAM, timeout=timeout)
+        return st, v & 0xFFFF, v >> 16
 
     def fill_two(self, f1, f2, amp, rate_msps=80):
         """Two complex tones of amplitude amp/2 each (a two-tone test for intermodulation)."""

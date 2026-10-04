@@ -723,6 +723,7 @@ extern int txtone_linear_pwr(void);
 static struct {
     bool begun, keyed;
     int32_t rot_cos, rot_sin, rot2_cos, rot2_sin, pre_g, pre_p;
+    uint32_t st_g, st_inc, st_inc2;
     uint32_t addr, ms, last_op, play_bits;
 } iq = {.ms = 100, .play_bits = 16383u | (1u << 15)};
 
@@ -789,6 +790,201 @@ static uint32_t iq_fill(unsigned amp, unsigned mode)
         zi = ni;
     }
     return IQ_WORDS;
+}
+
+
+/* ---- E1: stream new buffers into bank 2 while the engine plays it (40 Msps, 6 CPU cycles per word) ---- */
+static uint32_t *const iq_lut = (uint32_t *)0x3FCB0000u; /* 1024 words in capture bank 0 (free in the research build; the work RAM is full) */
+
+static void iq_build_lut(unsigned amp)
+{
+    int64_t zr = (int64_t)amp << 20, zi = 0;
+    for (unsigned k = 0; k < 1024; k++) {
+        int32_t i = (int32_t)((zr + (1 << 19)) >> 20), q = (int32_t)((zi + (1 << 19)) >> 20);
+        int64_t q2 = (((int64_t)q * (65536 + iq.pre_g)) >> 16) + (((int64_t)i * iq.pre_p) >> 16);
+        q = q2 > 511 ? 511 : q2 < -512 ? -512 : (int32_t)q2;
+        iq_lut[k] = ((uint32_t)i & 0x3FFu) | (((uint32_t)q & 0x3FFu) << 10);
+        int64_t nr = (zr * 1073721611 - zi * 6588356) >> 30, ni = (zr * 6588356 + zi * 1073721611) >> 30;
+        zr = nr;
+        zi = ni;
+    }
+}
+
+/* 256 words from the lookup table: 8 rounds of 32 fully unrolled stores, two interleaved phase accumulators so that the load-use delay
+ * of the table lookup overlaps (a call costs about 38 cycles, so the call is per 256 words). */
+__attribute__((noinline)) static uint32_t iq_write_256(volatile uint32_t *vdst, uint32_t phase, uint32_t inc)
+{
+    uint32_t *dst = (uint32_t *)vdst; /* not volatile: a volatile store gets a memw barrier in front of it, one more cycle per word */
+    uint32_t pa = phase, pb = phase + inc, inc2 = inc * 2u, a, b;
+    for (unsigned r = 0; r < 8; r++, dst += 32) {
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[0] = a; dst[1] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[2] = a; dst[3] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[4] = a; dst[5] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[6] = a; dst[7] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[8] = a; dst[9] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[10] = a; dst[11] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[12] = a; dst[13] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[14] = a; dst[15] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[16] = a; dst[17] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[18] = a; dst[19] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[20] = a; dst[21] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[22] = a; dst[23] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[24] = a; dst[25] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[26] = a; dst[27] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[28] = a; dst[29] = b; pa += inc2; pb += inc2;
+        a = iq_lut[pa >> 22]; b = iq_lut[pb >> 22]; dst[30] = a; dst[31] = b; pa += inc2; pb += inc2;
+    }
+    __asm__ volatile("memw" ::: "memory");
+    return pa;
+}
+
+#define STREAM_BLOCK 256u
+#define STREAM_TAIL 512u
+#define STREAM_MARGIN 64u /* words the writer stays behind the reader */
+#define STREAM_WORD_CYC 6u
+
+static uint32_t iq_stream(unsigned amp)
+{
+    volatile uint32_t *bank2 = (volatile uint32_t *)IQ_BANK2;
+    const uint32_t base = 16383u; /* rate bit 0: 40 Msps */
+    uint32_t phase = 0, buffers, late = 0;
+    iq_build_lut(amp);
+    const uint32_t inc1 = iq.st_inc, inc2 = iq.st_inc2 ? iq.st_inc2 : iq.st_inc;
+    for (unsigned w = 0; w < IQ_WORDS; w += 256) /* buffer 0 before the first trigger */
+        phase = iq_write_256(bank2 + w, phase, inc1);
+
+    REG(IQ_DAC_REG) = base;
+    REG(IQ_DAC_REG) = base | (1u << 31);
+    uint32_t t0 = cpu_cycles();
+    const uint32_t end = t0 + iq.ms * 240000u;
+    buffers = 1;
+    for (uint32_t b = 1;; b++) { /* b: buffer being written */
+        const uint32_t inc = (b & 1u) ? inc2 : inc1;
+        phase += (uint32_t)(((uint64_t)inc * iq.st_g) >> 8); /* the pause between the buffers */
+        /* The last STREAM_TAIL words are written after the next trigger, so that nothing delays the trigger: this part has
+         * time (the reader reaches it only a whole buffer later), the trigger has none. */
+        for (unsigned w = 0; w < IQ_WORDS - STREAM_TAIL; w += STREAM_BLOCK) {
+            const uint32_t target = t0 + STREAM_WORD_CYC * (w + STREAM_BLOCK - 1 + STREAM_MARGIN);
+            while ((int32_t)(cpu_cycles() - target) < 0)
+                ;
+            if ((int32_t)(cpu_cycles() - target) > 400)
+                late++;
+            phase = iq_write_256(bank2 + w, phase, inc);
+        }
+        while (!(REG(IQ_DAC_REG) & (1u << 18))) /* the engine finishes the previous buffer: trigger at once */
+            ;
+        REG(IQ_DAC_REG) = base;
+        REG(IQ_DAC_REG) = base | (1u << 31);
+        t0 = cpu_cycles();
+        buffers++;
+        for (unsigned w = IQ_WORDS - STREAM_TAIL; w < IQ_WORDS; w += STREAM_BLOCK)
+            phase = iq_write_256(bank2 + w, phase, inc);
+        if ((int32_t)(cpu_cycles() - end) >= 0)
+            break; /* bank 2 holds a complete buffer (the one the engine is playing now) */
+    }
+    {
+        uint32_t t = cpu_cycles();
+        while (!(REG(IQ_DAC_REG) & (1u << 18)) && cpu_cycles() - t < 3u * 240000u)
+            ;
+    }
+    REG(IQ_DAC_REG) = 0;
+    return (late > 0xFFFF ? 0xFFFFu : late) << 16 | (buffers > 0xFFFF ? 0xFFFFu : buffers);
+}
+
+static uint32_t iq_bench(unsigned mode_arg)
+{
+    volatile uint32_t *bank2 = (volatile uint32_t *)IQ_BANK2;
+    const unsigned mode = mode_arg & 3;
+    const bool unrolled = mode_arg & 4;
+    uint32_t phase = 0;
+    const uint32_t base = mode == 2 ? (16383u | (1u << 15)) : 16383u;
+    iq_build_lut(100);
+    if (mode >= 1) {
+        REG(IQ_DAC_REG) = base;
+        REG(IQ_DAC_REG) = base | (1u << 31);
+    }
+    uint32_t t = cpu_cycles(), written;
+    if (mode == 3) {
+        written = 0;
+    } else {
+        if (unrolled)
+            for (unsigned w = 0; w < IQ_WORDS; w += 256)
+                phase = iq_write_256(bank2 + w, phase, 0x08000000u);
+        else
+            for (unsigned w = 0; w < IQ_WORDS; w++) {
+                bank2[w] = iq_lut[phase >> 22];
+                phase += 0x08000000u;
+            }
+        written = cpu_cycles() - t;
+    }
+    if (mode >= 1) {
+        while (!(REG(IQ_DAC_REG) & (1u << 18)))
+            ;
+        REG(IQ_DAC_REG) = 0;
+    }
+    return mode == 3 ? cpu_cycles() - t : written; /* the time of the write loop only (not the wait for the engine) */
+}
+
+
+static uint32_t iq_stream_check(void)
+{
+    volatile uint32_t *bank2 = (volatile uint32_t *)IQ_BANK2;
+    uint32_t best_bad = 0xFFFFFFFFu, best_first = 0xFFFF;
+    for (unsigned k = 0; k < 1024; k++) { /* every table entry equal to word 0 is a candidate for the start phase */
+        if (iq_lut[k] != bank2[0])
+            continue;
+        uint32_t phase = (uint32_t)k << 22, bad = 0, first = 0xFFFF;
+        for (unsigned w = 0; w < IQ_WORDS && bad < best_bad; w++) {
+            if (bank2[w] != iq_lut[phase >> 22]) {
+                if (!bad)
+                    first = w;
+                bad++;
+            }
+            phase += iq.st_inc;
+        }
+        if (bad < best_bad) {
+            best_bad = bad;
+            best_first = first;
+        }
+    }
+    if (best_bad == 0xFFFFFFFFu)
+        return 0xFFFFFFFFu;
+    return (best_first << 16) | (best_bad > 0xFFFF ? 0xFFFFu : best_bad);
+}
+
+
+static uint32_t iq_stream_check(void);
+static uint32_t iq_wcheck(unsigned playing)
+{
+    volatile uint32_t *bank2 = (volatile uint32_t *)IQ_BANK2;
+    uint32_t phase = 0;
+    iq_build_lut(150);
+    if (playing) {
+        REG(IQ_DAC_REG) = 16383u;
+        REG(IQ_DAC_REG) = 16383u | (1u << 31);
+    }
+    if (playing == 2) { /* volatile stores, each with a memw barrier in front (7 cycles per word) */
+        for (unsigned w = 0; w < IQ_WORDS; w++) {
+            bank2[w] = iq_lut[phase >> 22];
+            phase += iq.st_inc;
+        }
+    } else if (playing == 3) { /* the same, but every word is stored twice */
+        for (unsigned w = 0; w < IQ_WORDS; w++) {
+            uint32_t v = iq_lut[phase >> 22];
+            bank2[w] = v;
+            bank2[w] = v;
+            phase += iq.st_inc;
+        }
+    } else {
+        for (unsigned w = 0; w < IQ_WORDS; w += 256)
+            phase = iq_write_256(bank2 + w, phase, iq.st_inc);
+    }
+    if (playing) {
+        while (!(REG(IQ_DAC_REG) & (1u << 18)))
+            ;
+        REG(IQ_DAC_REG) = 0;
+    }
+    return iq_stream_check();
 }
 
 static uint32_t iq_play(uint32_t bits)
@@ -873,6 +1069,30 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
         return CTL_OK;
     case IQ_OP_ROT2_SIN:
         iq.rot2_sin = (int32_t)arg;
+        return CTL_OK;
+    case IQ_OP_STREAM_G:
+        iq.st_g = arg;
+        return CTL_OK;
+    case IQ_OP_STREAM_INC:
+        iq.st_inc = arg;
+        return CTL_OK;
+    case IQ_OP_STREAM_INC2:
+        iq.st_inc2 = arg;
+        return CTL_OK;
+    case IQ_OP_WCHECK:
+        *value = iq_wcheck(arg & 3);
+        return CTL_OK;
+    case IQ_OP_STREAM_CHECK:
+        *value = iq_stream_check();
+        return CTL_OK;
+    case IQ_OP_BENCH:
+        *value = iq_bench(arg & 7);
+        return CTL_OK;
+    case IQ_OP_STREAM:
+        if (arg < 1 || arg > 255)
+            return CTL_BAD_ARGUMENT;
+        *value = iq_stream(arg);
+        iq.last_op = cpu_cycles();
         return CTL_OK;
     case IQ_OP_PRE_G:
         iq.pre_g = (int32_t)arg;

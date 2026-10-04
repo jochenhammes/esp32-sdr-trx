@@ -35,7 +35,7 @@ The playback needs bank 2, so the host ring of the polar transmitter (banks 0..2
   Budget at 40 Msps: 6 CPU cycles (240 MHz) per word. One lookup in a precomputed table, an add and a store fit; a general interpolation/NCO is borderline on one core; both cores can split the buffer (core 1 writes the second half).
   At 80 Msps there are 3 cycles per word: only copying/lookup, no arithmetic. **Whether this works at all is not known**: the writer must not overtake the reader, the engine must read what was just written without wait states or corruption, and the extra bus traffic must not slow or glitch the engine. Experiment E1.
 
-## Experiment E1 (feasibility of design B) — runs next
+## Experiment E1 (feasibility of design B) — RESULT: pacing works, data integrity does not (2026-10-04)
 
 Firmware op `IQ_OP_STREAM` in the research build: the engine plays at 40 Msps; after each trigger the CPU writes the next buffer from a lookup table with a phase accumulator (a complex tone), paced so that it stays behind the reader (word n is written no earlier than `6 n + margin` cycles after the trigger); the next trigger is issued
 when both the engine has finished and the writer has. Measure with the Pluto: line purity and sidebands at the buffer rate (2.44 kHz) and its multiples against the static buffer with pause compensation (-48 dBc), and the spurs produced by the writer if it ever touches the playing part.
@@ -56,3 +56,37 @@ Then change the phase increment per buffer (FM) and check that the line follows.
 * The rate bit 0 at 40 Msps gives 20 MHz of bandwidth: is that enough for every planned mode? (Probably, narrowband needs far less.)
 * The pause compensation G = 27 depends on the CPU loop; with design B the pause is set by the writer, so G must be measured again.
 * 5/6 LO mode for TX (reported by the original author): not measured here.
+
+## E1 result
+
+Research build ops `IQ_OP_STREAM*`, `IQ_OP_WCHECK`, `IQ_OP_STREAM_CHECK`, `IQ_OP_BENCH` (firmware/protocol/iqtest.h), PlutoSDR and a word-by-word readback of bank 2.
+
+**What works.**
+
+* The engine accepts a re-trigger every 409.6 us at 40 Msps for as long as the CPU keeps writing: 731 of 732 expected buffers in 300 ms, no late block, the line at the right frequency (+65 dB).
+* The CPU can write fast enough: a lookup-table writer costs 5.2 cycles per word (budget at 40 Msps: 6). Three things were needed: no `volatile` on the destination (the compiler puts a `memw` barrier before every volatile store, about one cycle more per word), an unrolled
+  loop with two interleaved phase accumulators, and one call per 256 words (a function call costs about 38 cycles). A plain loop costs 7.0, a `volatile` unrolled one 6.7.
+* Writing does not slow the engine and the engine does not slow the CPU (timing identical with the engine idle, at 40 and at 80 Msps).
+* Trigger without delay: write the last 512 words of the next buffer *after* the trigger (the reader reaches them a whole buffer later) and poll the done bit in a tight loop before it.
+
+**What does not work: the written words are wrong while the engine reads the bank.** `IQ_OP_WCHECK` writes the 16384 words of a tone and compares them with the ideal tone afterwards:
+
+| Writer | Engine | Wrong words of 16384 (tone 0.625 MHz) |
+|---|---|---|
+| block writer | idle | **0** |
+| block writer | playing at 40 Msps | 1900 (615 for a 5 MHz tone) |
+| plain volatile stores, `memw` before each | playing | 2906 |
+| every word stored twice | playing | 3876 |
+
+The errors are identical from run to run (deterministic), spread evenly over the whole buffer in a pattern with a period of 512 words (about 45 per 1024 words in the paced streaming run, where the writer stays 30 to 64 words behind the reader, so it is not
+a collision of neighbouring words), and the wrong value is often a value from a few words earlier (words 326 and 327 contained the data of words 322 and 323). Stores are not simply dropped (a dropped store would leave the identical old tone in the buffer,
+the stored tone in these tests has a different phase from the previous one). Looks like a hardware problem when the CPU writes into the bank the engine reads (store data from an earlier cycle on a stalled access). The sidebands at the buffer rate in the streaming runs (-18 to -26 dBc at 5 MHz,
+nearly independent of the pause compensation) come from these wrong words, not from the pause.
+
+**Consequences.**
+
+* Design B with CPU stores into the playing bank is **not usable** as it is. Buffers can only be changed when the engine is not reading, which means a gap of at least the copy time (about 90 us for 16384 words), so no gap-free stream.
+* Design A (one fixed buffer, re-triggered, pause compensated, G = 27 samples at 80 Msps for the poll-done loop) stays the base of every product mode. With it periodic signals are clean (first sidebands -48 dBc), and everything that is changed *between* bursts works.
+* Not tried yet, in the order of effort: (1) copy with the GDMA memory-to-memory channel instead of CPU stores, in case the DMA master is not hit by the problem; (2) write only the part of the bank the engine reads *later* with a larger distance than 64 words (perhaps the errors are tied to a read-ahead of the engine; the evenly spread errors argue against it); (3) a readback-and-repair pass (reads may be reliable);
+  (4) the other three banks cannot be used as the playback source (the engine reads bank 2 only).
+* What Design A already gives for the product: carriers and tones at any offset from the LO, two-tone and chirp test signals, modulated bursts of at most 204.8 us (one buffer), and the polar FM/SSB transmitter unchanged. A voice mode that beats the polar transmitter is not in reach with Design A alone.

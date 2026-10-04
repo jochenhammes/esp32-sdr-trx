@@ -265,7 +265,7 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
         }
 #endif
 #ifdef ESPDR_IQTEST
-    case IQ_OP_BEGIN ... IQ_OP_ROT2_SIN:
+    case IQ_OP_BEGIN ... IQ_OP_WCHECK:
         return radio_iq_op(op, arg, value);
 #endif
     case ESP_STOP: /* the run, if any, has already ended */
