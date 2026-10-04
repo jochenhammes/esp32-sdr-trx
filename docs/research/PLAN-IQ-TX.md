@@ -17,6 +17,8 @@ Known facts to build on (all *reported* until reproduced):
 Why this changes the current code: `firmware/protocol/transmit.h` uses capture banks 0..2 as the ring (`TX_RING_BYTES`), which collides with bank 2 as the playback buffer; the keyed state comes from
 `start_tx_tone_step(1, 0, g, 0, 0, 0)` in `radio_tx_run()`, which the report says writes I = Q = 0 with the enable bit.
 
+**Phase A status (2026-10-04): attempted, not reproduced; see [IQ-TX-PHASE-A.md](IQ-TX-PHASE-A.md). The gate has not been passed.**
+
 ## Phase A: reproduce (smallest possible test, needs the board and a PlutoSDR or HackRF)
 
 Use the TX research build (`make -C esp32s3 NARROWBAND=1 TXTEST=1`, loaded to RAM with `espdr_load.py`, a reset restores the flash image; see the notes in `TX-RESEARCH.md`). Add a research op, for example `radio_tx_iq_test()` next to `radio_tx_test()` in `firmware/src/radio.c`:

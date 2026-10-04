@@ -505,6 +505,9 @@ static struct {
     uint32_t word;
     bool prepared;
 } tx = {.rate_hz = 40000, .limit_s = 600};
+#ifdef ESPDR_IQTEST
+static bool iq_skip_cal; /* research: IQ_OP_BEGIN bit 0 leaves out txcal_debuge_mode() */
+#endif
 
 /* Bits 17:10 of the frontend register hold (-g) & 0xFF: the gain code; smaller g is stronger (0.28 dB per code for g <= 127). */
 static inline void tx_set_gain(unsigned g)
@@ -552,8 +555,13 @@ unsigned radio_tx_begin(uint32_t *word)
         return CTL_NOT_READY;
     bool ok = release_receiver() && tune_pll(tx.lo_hz);
     if (ok) {
-        txcal_debuge_mode(); /* the PHY's own transmit test mode; it may move the PLL, so tune again */
-        ok = tune_pll(tx.lo_hz);
+#ifdef ESPDR_IQTEST
+        if (!iq_skip_cal)
+#endif
+        {
+            txcal_debuge_mode(); /* the PHY's own transmit test mode; it may move the PLL, so tune again */
+            ok = tune_pll(tx.lo_hz);
+        }
     }
     if (!ok) {
         txcal_work_mode();
@@ -704,4 +712,177 @@ uint32_t radio_tx_run(void)
     (void)overruns;
     return (uint32_t)reason << 24 | sat8(underruns) << 16 | (late > 0xFFFF ? 0xFFFF : late);
 }
+
+#ifdef ESPDR_IQTEST
+/* ---- research: DAC playback engine tests (protocol/iqtest.h) ---------------------------------- */
+#include "iqtest.h"
+
+extern void phy_txtone_start(int mhz, int offset, int power);
+
+static struct {
+    bool begun, keyed;
+    int32_t rot_cos, rot_sin;
+    uint32_t addr, ms, last_op;
+} iq = {.ms = 100};
+
+static void iq_end(void)
+{
+    if (iq.keyed) {
+        REG(IQ_DAC_REG) = 0;
+        start_tx_tone_step(0, 0, 0, 0, 0, 0);
+    }
+    if (iq.begun) {
+        txcal_work_mode(); /* harmless if the debug mode was never entered (to be confirmed) */
+        receiver.status = reconfigure(true);
+    }
+    iq.begun = iq.keyed = false;
+    tx.prepared = false;
+}
+
+void radio_iq_watchdog(void)
+{
+    if ((iq.begun || iq.keyed) && cpu_cycles() - iq.last_op > IQ_IDLE_MS * 240000u)
+        iq_end();
+}
+
+static uint32_t iq_fill(unsigned amp, unsigned mode)
+{
+    volatile uint32_t *bank2 = (volatile uint32_t *)IQ_BANK2;
+    int64_t zr = (int64_t)amp << 20, zi = 0; /* Q20 */
+    for (unsigned n = 0; n < IQ_WORDS; n++) {
+        int32_t i = (int32_t)((zr + (1 << 19)) >> 20), q = (int32_t)((zi + (1 << 19)) >> 20);
+        switch (mode) {
+        case IQ_MODE_REAL:
+            q = 0;
+            break;
+        case IQ_MODE_CONST:
+            i = (int32_t)amp;
+            q = 0;
+            break;
+        case IQ_MODE_ZERO:
+            i = q = 0;
+            break;
+        case IQ_MODE_RAW:
+            bank2[n] = (uint32_t)iq.rot_cos;
+            continue;
+        default:
+            break;
+        }
+        bank2[n] = ((uint32_t)i & 0x3FFu) | (((uint32_t)q & 0x3FFu) << 10);
+        int64_t nr = (zr * iq.rot_cos - zi * iq.rot_sin) >> 30, ni = (zr * iq.rot_sin + zi * iq.rot_cos) >> 30;
+        zr = nr;
+        zi = ni;
+    }
+    return IQ_WORDS;
+}
+
+static uint32_t iq_play(uint32_t bits)
+{
+    const uint32_t base = bits & 0x0FF8BFFFu; /* the implemented bits except run (31) and done (18) */
+    uint32_t done = 0, timeouts = 0;
+    const uint32_t end = cpu_cycles() + iq.ms * 240000u;
+    while ((int32_t)(cpu_cycles() - end) < 0) {
+        REG(IQ_DAC_REG) = base;
+        REG(IQ_DAC_REG) = base | (1u << 31);
+        uint32_t t = cpu_cycles();
+        while (!(REG(IQ_DAC_REG) & (1u << 18)))
+            if (cpu_cycles() - t > 2u * 240000u) {
+                timeouts++;
+                break;
+            }
+        REG(IQ_DAC_REG) = base;
+        done++;
+    }
+    REG(IQ_DAC_REG) = 0;
+    return (timeouts > 0xFFFF ? 0xFFFFu : timeouts) << 16 | (done > 0xFFFF ? 0xFFFFu : done);
+}
+
+unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
+{
+    iq.last_op = cpu_cycles();
+    if (op != IQ_OP_BEGIN && op != IQ_OP_END && op != IQ_OP_KEY_RAW && op < IQ_OP_ADDR && !iq.begun && op != IQ_OP_ROT_COS && op != IQ_OP_ROT_SIN && op != IQ_OP_MS)
+        return CTL_NOT_READY;
+    switch (op) {
+    case IQ_OP_BEGIN: {
+        iq_end();
+        iq_skip_cal = arg & 1;
+        unsigned st = radio_tx_begin(value);
+        iq.begun = st == CTL_OK;
+        return st;
+    }
+    case IQ_OP_KEY:
+        if (iq.keyed)
+            return CTL_BUSY;
+        start_tx_tone_step(1, 0, (int)(arg & 0xFF), 0, 0, 0);
+        iq.keyed = true;
+        REG(IQ_BANK_SELECT_REG) = (arg >> 8) & 0xFF; /* keying clears it; grant the bank after keying */
+        *value = REG(IQ_BANK_SELECT_REG);
+        return CTL_OK;
+    case IQ_OP_KEY2:
+        if (iq.keyed)
+            return CTL_BUSY;
+        phy_txtone_start((int)(arg & 0xFFFF), 0, (int)((arg >> 16) & 0xFF));
+        iq.keyed = true;
+        REG(IQ_BANK_SELECT_REG) = (arg >> 24) & 0xFF;
+        *value = REG(IQ_BANK_SELECT_REG);
+        return CTL_OK;
+    case IQ_OP_KEY_RAW:
+        if (iq.keyed || iq.begun)
+            return CTL_BUSY;
+        phy_txtone_start((int)(arg & 0xFFFF), 0, (int)((arg >> 16) & 0xFF));
+        iq.keyed = iq.begun = true;
+        REG(IQ_BANK_SELECT_REG) = (arg >> 24) & 0xFF;
+        *value = REG(IQ_BANK_SELECT_REG);
+        return CTL_OK;
+    case IQ_OP_PBUS_RD:
+        *value = rom_pbus_rd((arg >> 4) & 15, arg & 15) & 511;
+        return CTL_OK;
+    case IQ_OP_PBUS_WR:
+        return pbus_write((arg >> 4) & 15, arg & 15, (arg >> 8) & 511) ? CTL_OK : CTL_FAILED;
+    case IQ_OP_GAIN:
+        tx_set_gain(arg & 0xFF);
+        return CTL_OK;
+    case IQ_OP_ROT_COS:
+        iq.rot_cos = (int32_t)arg;
+        return CTL_OK;
+    case IQ_OP_ROT_SIN:
+        iq.rot_sin = (int32_t)arg;
+        return CTL_OK;
+    case IQ_OP_FILL:
+        if ((arg & 0x3FF) > 511 || ((arg >> 16) & 15) > IQ_MODE_RAW)
+            return CTL_BAD_ARGUMENT;
+        *value = iq_fill(arg & 0x3FF, (arg >> 16) & 15);
+        return CTL_OK;
+    case IQ_OP_MS:
+        if (arg < 1 || arg > 3000)
+            return CTL_BAD_ARGUMENT;
+        iq.ms = arg;
+        return CTL_OK;
+    case IQ_OP_PLAY:
+        *value = iq_play(arg);
+        iq.last_op = cpu_cycles();
+        return CTL_OK;
+    case IQ_OP_END:
+        iq_end();
+        return CTL_OK;
+    case IQ_OP_ADDR:
+        if ((arg & 3) || !((arg >= 0x60000000u && arg <= 0x600FFFFCu) || (arg >= 0x3FCB0000u && arg <= 0x3FCDFFFCu)))
+            return CTL_BAD_ARGUMENT;
+        iq.addr = arg;
+        return CTL_OK;
+    case IQ_OP_POKE:
+        if (!iq.addr)
+            return CTL_NOT_READY;
+        REG(iq.addr) = arg;
+        return CTL_OK;
+    case IQ_OP_PEEK:
+        if (!iq.addr)
+            return CTL_NOT_READY;
+        *value = REG(iq.addr);
+        return CTL_OK;
+    default:
+        return CTL_UNKNOWN_OP;
+    }
+}
+#endif /* ESPDR_IQTEST */
 #endif

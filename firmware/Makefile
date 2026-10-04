@@ -12,7 +12,11 @@ ESPTOOL ?= esptool.py
 NARROWBAND ?= 1
 # TX=1 adds the experimental transmitter (protocol/transmit.h). It is a separate image: the receiver image contains no transmit code.
 TX ?= 0
-ifeq ($(TX),1)
+# IQTEST=1 (with TX=1) adds the research ops of protocol/iqtest.h (DAC playback engine tests); built into build-iq, never released.
+IQTEST ?= 0
+ifeq ($(IQTEST),1)
+BUILD ?= build-iq
+else ifeq ($(TX),1)
 BUILD ?= build-tx
 else ifeq ($(NARROWBAND),1)
 BUILD ?= build-rx
@@ -60,6 +64,9 @@ ifeq ($(NARROWBAND),1)
 NB_FLAGS := -DESPDR_NARROWBAND=1
 ifeq ($(TX),1)
 NB_FLAGS += -DESPDR_TX=1
+ifeq ($(IQTEST),1)
+NB_FLAGS += -DESPDR_IQTEST=1
+endif
 endif
 ifeq ($(PROFILE),1)
 NB_FLAGS += -DPROFILE=1 # per-section cycle counters in dsp_unit(), read with `espdr_nb.py dspbench --profile`

@@ -1,0 +1,39 @@
+/*
+ * RESEARCH ONLY (IQTEST=1 builds, never part of a release): control ops to test the DAC playback engine at 0x60033D64
+ * (docs/research/PLAN-IQ-TX.md, Phase A). All ops are ordinary requests/responses; the host script is scripts/iqtest.py.
+ *
+ * Sequence: TX_OP_LO, IQ_OP_BEGIN (receiver released, PLL tuned, PHY transmit test mode), IQ_OP_KEY (carrier chain on, bank granted),
+ * IQ_OP_ROT_* + IQ_OP_FILL (samples into bank 2), IQ_OP_PLAY (re-trigger the engine for IQ_OP_MS milliseconds), ..., IQ_OP_END.
+ * If no IQ op arrives for IQ_IDLE_MS the chip ends the session by itself.
+ */
+#pragma once
+
+#define IQ_OP_BEGIN 50 /* prepare like TX_OP_BEGIN (needs TX_OP_LO); arg bit 0: leave out txcal_debuge_mode(); the response value is the PLL word */
+#define IQ_OP_KEY 51   /* arg: bits 7:0 gain code for start_tx_tone_step, bits 15:8 value for 0x600C101C (bank grant) written after keying; value: its readback */
+#define IQ_OP_GAIN 52  /* arg: gain code (bits 17:10 of 0x60006040) */
+#define IQ_OP_ROT_COS 53 /* arg: cos of the phase step per sample, signed Q30 */
+#define IQ_OP_ROT_SIN 54 /* arg: sin of the phase step per sample, signed Q30 */
+#define IQ_OP_FILL 55  /* arg: bits 9:0 amplitude (0..511), bits 19:16 mode (IQ_MODE_*): fills the whole of bank 2 (16384 words) */
+#define IQ_OP_MS 56    /* arg: duration of the next IQ_OP_PLAY in ms (1 .. 3000) */
+#define IQ_OP_PLAY 57  /* arg: bits written to 0x60033D64 (count-1 in 13:0, rate bit 15, hold bit 19, ...; bit 31 and 18 are handled here);
+                          value: bits 15:0 triggers completed, bits 31:16 polls that timed out */
+#define IQ_OP_END 58   /* stop, un-key, set the receiver up again */
+#define IQ_OP_ADDR 59  /* arg: address for IQ_OP_POKE / IQ_OP_PEEK (0x60000000..0x600FFFFF, 32-bit aligned) */
+#define IQ_OP_POKE 60  /* arg: 32-bit value written to the address */
+#define IQ_OP_PEEK 61  /* value: the 32-bit word at the address (addresses also in capture banks 0..2, 0x3FCB0000..0x3FCDFFFC) */
+#define IQ_OP_KEY_RAW 65 /* like KEY2 but with the receiver left configured (no BEGIN, no PBUS release, no PLL change); IQ_OP_END restores it. arg as KEY2 */
+#define IQ_OP_PBUS_RD 63 /* arg: block << 4 | index; value: the analog bus register (9 bits) */
+#define IQ_OP_PBUS_WR 64 /* arg: value << 8 | block << 4 | index */
+#define IQ_OP_KEY2 62  /* like IQ_OP_KEY but with the PHY's phy_txtone_start(mhz, 0, power): arg bits 15:0 mhz, 23:16 power, 31:24 bank grant */
+
+#define IQ_MODE_ROTATOR 0 /* I + jQ = A * w^n (complex tone; w from IQ_OP_ROT_*) */
+#define IQ_MODE_REAL 1    /* I = Re(A * w^n), Q = 0 */
+#define IQ_MODE_CONST 2   /* I = A, Q = 0 */
+#define IQ_MODE_ZERO 3    /* all words 0 */
+#define IQ_MODE_RAW 4     /* every word = the value given with IQ_OP_ROT_COS (raw 32-bit pattern) */
+
+#define IQ_BANK2 0x3FCD0000u
+#define IQ_WORDS 16384u
+#define IQ_DAC_REG 0x60033D64u
+#define IQ_BANK_SELECT_REG 0x600C101Cu
+#define IQ_IDLE_MS 20000u

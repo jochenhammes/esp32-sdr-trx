@@ -20,6 +20,9 @@
 #include "stream.h"
 #ifdef ESPDR_TX
 #include "transmit.h"
+#ifdef ESPDR_IQTEST
+#include "iqtest.h"
+#endif
 #endif
 #endif
 #include "soc/gpio_reg.h"
@@ -261,6 +264,10 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
             return st;
         }
 #endif
+#ifdef ESPDR_IQTEST
+    case IQ_OP_BEGIN ... IQ_OP_KEY_RAW:
+        return radio_iq_op(op, arg, value);
+#endif
     case ESP_STOP: /* the run, if any, has already ended */
     case ESP_ARG_HIGH: /* kept by the command loop */
         return CTL_OK;
@@ -287,6 +294,9 @@ void app_main(void)
     uint32_t last_command = cpu_cycles(), last_byte = last_command;
     for (;;) {
         uint32_t now = cpu_cycles();
+#ifdef ESPDR_IQTEST
+        radio_iq_watchdog();
+#endif
         if (outputs_enabled && now - last_command > IDLE_RELEASE_CYCLES)
             set_outputs(false);
         if (received && now - last_byte > PARTIAL_REQUEST_CYCLES) {
