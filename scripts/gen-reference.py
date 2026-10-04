@@ -26,7 +26,7 @@ def documents():
         "docs/espdr-rx.md": render("espdr-rx", cli_rx.build_parser,
                                    "Receiver: loads the receiver firmware if needed and runs the rtl_tcp server. Guide: [receiver.md](receiver.md)."),
         "docs/espdr-tx.md": render("espdr-tx", cli_tx.build_parser,
-                                   "Transmitter: FM and SSB voice on 13 cm from a WAV file, a pipe or a sound card. **Read the "
+                                   "Transmitter: FM and SSB voice on 13 cm from a WAV file, a pipe or a sound card, and RTTY from a text. **Read the "
                                    "[transmitter guide](transmitter.md) first (licence, safety, tuning).**"),
     }
 

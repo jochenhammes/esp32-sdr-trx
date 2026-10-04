@@ -6,7 +6,7 @@ import zlib
 
 from . import nb
 
-TX_OP_LO, TX_OP_RATE, TX_OP_DRIFT, TX_OP_LIMIT, TX_OP_BEGIN, TX_OP_END = 40, 41, 42, 43, 44, 45
+TX_OP_LO, TX_OP_RATE, TX_OP_DRIFT, TX_OP_LIMIT, TX_OP_BEGIN, TX_OP_END, TX_OP_TEMP = 40, 41, 42, 43, 44, 45, 46
 TX_MIN_HZ, TX_MAX_HZ = 2_320_000_000, 2_450_000_000
 TX_LOW_MARGIN = 48
 TX_STATUS_MAGIC, TX_STATUS_BYTES = 0xB6, 8
@@ -25,6 +25,11 @@ def lo_word(hz):
     """The PLL word the firmware programs for an LO of `hz` (esp32s3_plan_lo, normal conversion): LO = 30 MHz * (32 + W / 65536)."""
     scaled = (hz * 65536 + 15_000_000) // 30_000_000
     return scaled - 32 * 65536
+
+
+def word_hz(word):
+    """The LO a PLL word really programs (the inverse of lo_word): 30 MHz * (32 + W / 65536); it can differ from the requested frequency by up to 229 Hz."""
+    return 30e6 * (32 + word / 65536)
 
 
 def choose_lo(hz, max_offset_steps=44):
@@ -89,6 +94,16 @@ class Session:
         c(TX_OP_RATE, int(rate))
         c(TX_OP_DRIFT, int(drift_hz) & 0xFFFF)
         c(TX_OP_LIMIT, int(limit_s))
+
+    def chip_temperature(self):
+        """The chip's temperature in degrees C from its sensor (between sessions only). Range 2 is the SDK's default, range 1 takes over when it saturates."""
+        for rng in (2, 1):
+            _, v = self.link.command(TX_OP_TEMP, rng)
+            idx, raw = v >> 24, (v & 0xFFFFFF) / 16.0
+            c = 0.4386 * raw - 27.88 * (idx - 2) - 20.52
+            if c < 70:
+                return c
+        return c
 
     def begin(self, expect_word=None):
         try:

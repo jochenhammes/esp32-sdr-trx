@@ -25,6 +25,8 @@
 #define TX_OP_LIMIT 43 /* longest session, seconds (1 .. 3600, default 600) */
 #define TX_OP_BEGIN 44 /* prepare; the value of the response is the programmed PLL word */
 #define TX_OP_END 45   /* op of the final response frame; never sent as a request */
+#define TX_OP_TEMP 46  /* the chip's temperature: arg = range 0..4 of its sensor (2 is the SDK default); value = range << 24 | sum of 16 raw readings.
+                          Degrees C = 0.4386 * (sum / 16) - 27.88 * offset - 20.52 with the offsets -2, -1, 0, 1, 2 of the ranges. Between sessions only. */
 
 #define TX_MIN_HZ 2320000000u
 #define TX_MAX_HZ 2450000000u
