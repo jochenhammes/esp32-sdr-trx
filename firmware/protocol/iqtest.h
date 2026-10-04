@@ -39,6 +39,10 @@
 #define IQ_OP_GDMA 80      /* E2: copy bank 1 (tone from IQ_OP_STREAM_INC, amplitude 150) to bank 2 with the GDMA memory-to-memory channel; arg bit 0: engine playing at 40 Msps meanwhile, bit 1: burst mode. value: bits 15:0 words of bank 2 that differ from bank 1, 31:16 index of the first */
 #define IQ_OP_GDMA_TIME 81 /* CPU cycles the last IQ_OP_GDMA copy took */
 #define IQ_OP_TEMP 82      /* arg: range index 0..4 of the chip's temperature sensor (2 is the SDK default). value: index << 24 | sum of 16 raw readings; degrees C = 0.4386 * raw - 27.88 * offset[index] - 20.52, offset = -2, -1, 0, 1, 2 */
+#define IQ_OP_LDPOS 83     /* LoRa plan, L1: arg: index (0..16383) of the next word written by IQ_OP_LD */
+#define IQ_OP_LDI 84       /* arg: I of the next word (10 bits, two's complement) */
+#define IQ_OP_LDQ 86       /* arg: Q (10 bits): writes the word I | Q << 10 to bank 2 at the load index, which then advances (engine idle only). Two ops per word keep every argument below 16 bits, so they can be sent in bulk */
+#define IQ_OP_GAP 85       /* arg: pause in microseconds between two triggers of IQ_OP_PLAY (0 = the 337 ns re-trigger pause only) */
 #define IQ_OP_PBUS_RD 63 /* arg: block << 4 | index; value: the analog bus register (9 bits) */
 #define IQ_OP_PBUS_WR 64 /* arg: value << 8 | block << 4 | index */
 #define IQ_OP_KEY2 62  /* like IQ_OP_KEY but with the PHY's phy_txtone_start(mhz, 0, power): arg bits 15:0 mhz, 23:16 power, 31:24 bank grant */

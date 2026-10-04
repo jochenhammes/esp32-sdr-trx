@@ -206,8 +206,9 @@ def detect(x, sf, preamble=8, threshold=6.0):
         j = i
         while j + 1 < count and good[j + 1] and abs(((d[j + 1] - d[i] + N // 2) % N) - N // 2) <= 2:
             j += 1
-        if j - i + 1 >= need and (best is None or j - i > best[1] - best[0]):
+        if j - i + 1 >= need:                          # the first frame in the stream, not the best one: decode_all walks through all of them
             best = (i, j)
+            break
         i = j + 1
     if best is None:
         return None
@@ -284,7 +285,12 @@ def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max
     pay0 = pre_start + shift + int(round((preamble + 4.25) * N))
     # bins of the payload: the shift by cfo (bins) and the fractional timing remainder (res chips is a shift of -res bins on up-chirps)
     off = cfo + (-res) * 1.0
-    out = dict(timing_chips=float(true_start), cfo_bins=float(cfo), cfo_hz=float(cfo * bw / N), phase=phase, quality=q, e1=e1, b2=b2)
+    pw = np.abs(np.fft.fft(_windows(x, N, pre_start, max(1, min(k_up, preamble - 1))) * down[None, :], axis=1)) ** 2
+    pk_pow = pw.max(axis=1)
+    noise_bin = np.median(pw, axis=1) / np.log(2)
+    snr = float(np.mean(10 * np.log10(np.maximum(pk_pow - noise_bin, 1e-9) / (N * noise_bin + 1e-12))))
+    out = dict(timing_chips=float(true_start), cfo_bins=float(cfo), cfo_hz=float(cfo * bw / N), phase=phase, quality=q, e1=e1, b2=b2, snr_db=snr,
+               start=int(round(true_start * os_ + phase)))
 
     def sym_at(i):
         w = x[pay0 + i * N: pay0 + (i + 1) * N]
@@ -340,4 +346,23 @@ def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max
         crcn = nib[5 + 2 * plen:5 + 2 * plen + 4]
         rx_crc = crcn[0] | (crcn[1] << 4) | (crcn[2] << 8) | (crcn[3] << 12)
         crc_ok = rx_crc == crc16(payload)
-    return dict(out, payload=payload, header_ok=header_ok, crc_ok=crc_ok)
+    return dict(out, payload=payload, header_ok=header_ok, crc_ok=crc_ok, end=out["start"] + frame_samples(plen, sf, os_, cr, preamble, has_crc))
+
+
+def demodulate_all(iq, fs, sf, bw, preamble=8, sync_word=0x34, max_frames=1000):
+    """All frames of a recording, in order: a list of the dicts of demodulate() with start/end as sample indices into iq."""
+    out = []
+    base = 0
+    os_ = int(round(fs / bw))
+    N = 1 << sf
+    seg = iq
+    while len(out) < max_frames and len(seg) > 12 * N * os_:
+        r = demodulate(seg, fs, sf, bw, preamble=preamble, sync_word=sync_word)
+        if r is None:
+            break
+        end = r.get("end") or (r["start"] + 8 * N * os_)
+        r = dict(r, start=r["start"] + base, end=end + base)
+        out.append(r)
+        seg = seg[max(end, 1):]
+        base += max(end, 1)
+    return out

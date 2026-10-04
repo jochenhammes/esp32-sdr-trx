@@ -726,7 +726,7 @@ static struct {
     bool begun, keyed;
     int32_t rot_cos, rot_sin, rot2_cos, rot2_sin, pre_g, pre_p;
     uint32_t st_g, st_inc, st_inc2;
-    uint32_t addr, ms, last_op, play_bits;
+    uint32_t addr, ms, last_op, play_bits, ld_pos, gap_us, ld_i;
 } iq = {.ms = 100, .play_bits = 16383u | (1u << 15)};
 
 static void iq_end(void)
@@ -1086,6 +1086,11 @@ static uint32_t iq_play(uint32_t bits)
             }
         REG(IQ_DAC_REG) = base;
         done++;
+        if (iq.gap_us) {
+            uint32_t g = cpu_cycles() + iq.gap_us * 240u;
+            while ((int32_t)(cpu_cycles() - g) < 0)
+                ;
+        }
     }
     REG(IQ_DAC_REG) = 0;
     return (timeouts > 0xFFFF ? 0xFFFFu : timeouts) << 16 | (done > 0xFFFF ? 0xFFFFu : done);
@@ -1170,6 +1175,22 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
         *value = iq_gdma_cycles;
         return CTL_OK;
 #endif
+    case IQ_OP_LDPOS:
+        if (arg >= IQ_WORDS)
+            return CTL_BAD_ARGUMENT;
+        iq.ld_pos = arg;
+        return CTL_OK;
+    case IQ_OP_LDI:
+        iq.ld_i = arg & 0x3FFu;
+        return CTL_OK;
+    case IQ_OP_LDQ:
+        if (iq.ld_pos >= IQ_WORDS)
+            return CTL_BAD_ARGUMENT;
+        ((volatile uint32_t *)IQ_BANK2)[iq.ld_pos++] = iq.ld_i | ((arg & 0x3FFu) << 10);
+        return CTL_OK;
+    case IQ_OP_GAP:
+        iq.gap_us = arg > 1000000u ? 1000000u : arg;
+        return CTL_OK;
     case IQ_OP_TEMP:
         *value = iq_temp(arg);
         return CTL_OK;
