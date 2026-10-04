@@ -1124,7 +1124,7 @@ __attribute__((noinline)) static uint32_t iq_lora(uint32_t report)
     const uint32_t base0 = lw.pbits & 0x0FF8BFFFu & ~0x3FFFu;
     uint32_t late = 0, copy_cycles = 0, first_late = 0xFFFFu;
     for (uint32_t rep = 0; rep < lw.reps; rep++) {
-        uint32_t next = cpu_cycles() + 2400u;
+        uint32_t next = cpu_cycles() + 4000u + 3u * lw.w; /* the first window has to be copied before the first trigger */
         for (uint32_t i = 0; i < lw.nsym; i++) {
             uint32_t code = syms[i], len = lw.w, play = lw.lp, period = lw.tc;
             const uint32_t *src;

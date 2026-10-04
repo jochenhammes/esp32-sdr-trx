@@ -130,6 +130,19 @@ at 414 words the same model decodes 30 of 30 at every carrier offset I tried. (2
 What would change the number: a second core that copies the next window while the first plays it (not possible: bank 2 cannot be rewritten while it plays, see DESIGN-IQ-TX.md), a smaller window (play only the part of the symbol that is needed: the FFT of a truncated symbol does not need the whole chirp, but a longer play fraction helps),
 and a receiver that matches the truncated symbol (a correlation against the 32 ideal truncated waveforms instead of a dechirp FFT).
 
+**Other spreading factors and bandwidths** (same method, 300 repetitions, Pluto gain 26 dB; the lead before the first symbol now scales with the window: with the old fixed 2400 cycles the first copy of a larger window was late and the delay never recovered, which produced all-late runs and 0 decoded frames at first):
+
+| SF | BW | frame | window | play fraction | decoded |
+|---|---|---|---|---|---|
+| 5 | 1.625 MHz | 990 us | 788 words | 0.54 | 85 of 106 |
+| 5 | 812.5 kHz (the ISM2400 LoRaWAN bandwidth) | 1.98 ms | 1575 | 0.56 | 222 of 241 |
+| 6 | 1.625 MHz | 1.78 ms | 1575 | 0.56 | 139 of 140 |
+| 7 | 1.625 MHz | 3.17 ms | 3151 | 0.57 | **87 of 87** |
+
+Larger symbols decode better (more bins, a finer peak). SF7 at 1.625 MHz, a frame of 41 symbols and 3.2 ms **written symbol by symbol, decodes every frame**. Threshold of the SF7 capture (SNR from the pauses 54 dB, white noise added, 87 frames): 2 % loss at 10 dB, 14 % at 6 dB, 37 % at 2 dB,
+44 % at 0 dB, 83 % at -2 dB, so 50 % at about 0.7 dB; the ideal SF7 chain is 5 to 6 dB better, which is the play fraction (-2.4 dB) plus what the truncated symbols cost the receiver. (SF5 at 812.5 kHz: 7 % loss at 10 dB; its pauses carry noise that limits the SNR to 11.7 dB.)
+So the statement for scheme W is: **it works at all SX1280 bandwidths I tried and gets better with the spreading factor; the cost is about 5 to 6 dB of sensitivity and the frame length is limited only by the 16384 words of the symbol list.**
+
 ## L4: comparison (all with the same payload class, Pluto as the receiver, numpy receiver)
 
 | Scheme | Parameters | Frame | Decoded on the air | SNR for 50 % loss | Against the ideal chain | SNR of the signal itself |
@@ -138,6 +151,7 @@ and a receiver that matches the truncated symbol (a correlation against the 32 i
 | S | SF5, BW 8 MHz, 80 Msps, 12 B | 201 us | 37 of 37 | 3.2 dB | +1.4 dB | 40 to 47 dB |
 | S | SF5, BW 8 MHz, 40 Msps, MeshCore raw 7 B, preamble 32, CR 4/8 | 305 us | 33 of 33 | -- | -- | 34 dB |
 | W (symbol by symbol) | SF5, BW 1.625 MHz, 12 B | 990 us | 177 of 216 | about 8 dB | about +6 dB | 8.8 dB |
+| W | SF7, BW 1.625 MHz, 12 B | 3.17 ms | 87 of 87 | about 0.7 dB | about +5.5 dB | 54 dB |
 | P (polar) | SF5..SF8, BW 62.5 kHz, 13 B | 41 to 165 ms | all frames | SF8: -6 dB | about +3 dB (rough, 8 frames) | 28 dB |
 | P | SF9, SF10, BW 62.5 kHz | 330 / 660 ms | 6 of 6 each (with the drift-following receiver) | -- | -- | 22 to 26 dB |
 | P | SF8, BW 31.25 kHz | 330 ms | 6 of 6 | -- | -- | -- |
