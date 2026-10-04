@@ -115,7 +115,7 @@ The [research branch](https://github.com/jochenhammes/esp32-sdr-trx/tree/researc
 | **Polar modulation** (the ordinary transmitter, frequency steps 40 000 times a second) | `espdr-tx -m lora` in the research branch | narrow LoRa, up to 80 kHz bandwidth; SF5 to SF10 at 62.5 kHz | PlutoSDR and the **ESP32's own receiver** (250 ksps) |
 
 * **Works:** frames decode on the air in all of these. The decoder of pluto-tx (tested there against a Heltec V3) reads the narrow SF7 and SF8 frames the ESP32 sends; the ESP32's own receiver decodes SF7 to SF9 at 62.5 kHz sent by a PlutoSDR (the pluto-tx decoder agrees).
-* **Does not (yet):** no real LoRa chip was used as a receiver (SF5/SF6 and the wide bandwidths are not standard LoRa, so only our own receiver reads them); no 433/868 MHz, no LoRaWAN, Meshtastic or MeshCore network, only 13 cm; the symbol-by-symbol scheme loses about 5 dB of sensitivity;
+* **Does not (yet):** no real LoRa chip was used as a receiver (SF5/SF6 and the wide bandwidths are not standard LoRa, so only our own receiver reads them); no 433/868 MHz, no LoRaWAN, Meshtastic or MeshCore network, only 13 cm; the symbol-by-symbol scheme loses about 5 dB of sensitivity; the ESP32's own receiver is at least 16 to 20 dB less sensitive than a PlutoSDR on narrow LoRa;
   long frames (SF9 and up) need a receiver that follows the carrier's thermal drift; the numbers come from one or two boards and a PlutoSDR.
 * Transmitting needs an amateur radio licence (see the [transmitter guide](docs/transmitter.md)).
 
