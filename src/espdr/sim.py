@@ -110,6 +110,8 @@ class SimTx:
             v = arg - 65536 if arg >= 32768 else arg
             self._resp(op, 0 if -2000 <= v <= 2000 else nb.CTL_BAD_ARGUMENT, 0, seq)
             p["drift"] = v
+        elif op == tl.TX_OP_TEMP and self.flags & 2:
+            self._resp(op, 0, (arg << 24) | int(16 * (42.0 + 27.88 * (arg - 2) + 20.52) / 0.4386), seq)
         elif op == tl.TX_OP_LIMIT and self.flags & 2:
             ok = 1 <= arg <= 3600
             p["limit"] = arg if ok else p["limit"]

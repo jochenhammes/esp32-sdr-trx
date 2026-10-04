@@ -256,6 +256,9 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
     case TX_OP_DRIFT:
     case TX_OP_LIMIT:
         return radio_tx_set(op, arg);
+    case TX_OP_TEMP:
+        *value = radio_tx_temp(arg);
+        return CTL_OK;
     case TX_OP_BEGIN:
         tx_pending = false;
         {

@@ -25,6 +25,7 @@
 #include "phy_init_data.h"
 #include "platform.h"
 #include "soc/rtc_cntl_reg.h"
+#include "soc/sens_struct.h"
 #include "soc/syscon_reg.h"
 #include "soc/system_reg.h"
 
@@ -541,6 +542,39 @@ unsigned radio_tx_set(unsigned op, uint32_t arg)
     }
 }
 
+
+/* The chip's temperature sensor (part of the SAR ADC on the S3), driven as the SDK's sar_periph_ctrl does. 16 raw readings are summed. */
+uint32_t radio_tx_temp(unsigned range)
+{
+    static const uint8_t dac[5] = {5, 7, 15, 11, 10};         /* I2C_SARADC_TSENS_DAC of the ranges (temperature_sensor_attributes) */
+    if (range > 4)
+        range = 2;
+    REG(0x6000E044u) &= ~(1u << 18);                            /* ANA_CONFIG_REG, I2C_SAR_M: the I2C bus to the SAR block on */
+    REG(0x6000E048u) |= (1u << 16);                             /* ANA_CONFIG2_REG, ANA_SAR_CFG2_M */
+    REG(SYSTEM_PERIP_CLK_EN0_REG) |= SYSTEM_APB_SARADC_CLK_EN;
+    REG(SYSTEM_PERIP_RST_EN0_REG) |= SYSTEM_APB_SARADC_RST;
+    REG(SYSTEM_PERIP_RST_EN0_REG) &= ~SYSTEM_APB_SARADC_RST;
+    SENS.sar_peri_clk_gate_conf.tsens_clk_en = 1;
+    SENS.sar_peri_reset_conf.tsens_reset = 1;
+    SENS.sar_peri_reset_conf.tsens_reset = 0;
+    SENS.sar_tctrl.tsens_power_up_force = 1;
+    SENS.sar_tctrl2.tsens_xpd_force = 1;
+    SENS.sar_tctrl.tsens_power_up = 1;
+    analog_write_bits(0x69, 6, 0x0F, dac[range]);               /* I2C_SAR_ADC, I2C_SARADC_TSENS_DAC */
+    delay_us(400);
+    uint32_t sum = 0;
+    for (unsigned k = 0; k < 16; k++) {
+        REG(0x60008850u) |= 1u << 24;                           /* tsens_dump_out */
+        uint32_t t = cpu_cycles();
+        while (!(REG(0x60008850u) & (1u << 8)) && cpu_cycles() - t < 240000u)       /* tsens_ready */
+            ;
+        REG(0x60008850u) &= ~(1u << 24);
+        sum += REG(0x60008850u) & 0xFFu;                        /* tsens_out */
+        delay_us(50);
+    }
+    return (range << 24) | sum;
+}
+
 unsigned radio_tx_begin(uint32_t *word)
 {
     struct esp32s3_lo_plan plan;
@@ -1039,36 +1073,6 @@ static uint32_t iq_gdma(unsigned arg)
 
 /* ---- chip temperature (the SoC's temperature sensor, as the SDK's temperature_sensor_ll.h and sar_periph_ctrl_common.c drive it) ---- */
 #include "soc/sens_struct.h"
-static uint32_t iq_temp(unsigned idx)
-{
-    static const uint8_t dac[5] = {5, 7, 15, 11, 10};
-    if (idx > 4)
-        idx = 2;
-    REG(0x6000E044u) &= ~(1u << 18);                                /* ANA_CONFIG_REG, I2C_SAR_M: the I2C bus to the SAR block on (regi2c_saradc_enable) */
-    REG(0x6000E048u) |= (1u << 16);                                 /* ANA_CONFIG2_REG, ANA_SAR_CFG2_M */
-    REG(SYSTEM_PERIP_CLK_EN0_REG) |= SYSTEM_APB_SARADC_CLK_EN;      /* adc_apb_periph_claim: the sensor is part of the SAR ADC on the S3 */
-    REG(SYSTEM_PERIP_RST_EN0_REG) |= SYSTEM_APB_SARADC_RST;
-    REG(SYSTEM_PERIP_RST_EN0_REG) &= ~SYSTEM_APB_SARADC_RST;
-    SENS.sar_peri_clk_gate_conf.tsens_clk_en = 1;
-    SENS.sar_peri_reset_conf.tsens_reset = 1;
-    SENS.sar_peri_reset_conf.tsens_reset = 0;
-    SENS.sar_tctrl.tsens_power_up_force = 1;
-    SENS.sar_tctrl2.tsens_xpd_force = 1;
-    SENS.sar_tctrl.tsens_power_up = 1;
-    analog_write_bits(0x69, 6, 0x0F, dac[idx]);                     /* I2C_SAR_ADC, I2C_SARADC_TSENS_DAC */
-    delay_us(400);                                                  /* the sensor needs about 200 us after power-up */
-    uint32_t sum = 0;
-    for (unsigned k = 0; k < 16; k++) {
-        REG(0x60008850u) |= 1u << 24;                                /* SENS_SAR_TSENS_CTRL_REG: tsens_dump_out */
-        uint32_t t = cpu_cycles();
-        while (!(REG(0x60008850u) & (1u << 8)) && cpu_cycles() - t < 240000u)       /* tsens_ready */
-            ;
-        REG(0x60008850u) &= ~(1u << 24);
-        sum += REG(0x60008850u) & 0xFFu;                             /* tsens_out */
-        delay_us(50);
-    }
-    return (idx << 24) | sum;
-}
 
 static uint32_t iq_play(uint32_t bits)
 {
@@ -1192,7 +1196,7 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
         iq.gap_us = arg > 1000000u ? 1000000u : arg;
         return CTL_OK;
     case IQ_OP_TEMP:
-        *value = iq_temp(arg);
+        *value = radio_tx_temp(arg);
         return CTL_OK;
     case IQ_OP_WCHECK:
         *value = iq_wcheck(arg & 3);

@@ -70,3 +70,90 @@ def test_the_command_reference_lists_every_option(build, doc):
     text = (pathlib.Path(__file__).resolve().parents[1] / doc).read_text()
     missing = [o for a in build()._actions for o in a.option_strings if o.startswith("--") and o not in text]
     assert not missing, f"{doc} lacks {missing}: run python scripts/gen-reference.py"
+
+
+# --- RTTY -----------------------------------------------------------------------------------------------------------------------------
+
+RTTY = ["-f", "2350", "-m", "rtty", "--accept-licence"]
+
+
+@pytest.mark.parametrize("extra,message", [
+    ([], "exactly one of --text and --text-file"),
+    (["--text", "A", "--text-file", "x.txt"], "exactly one of --text and --text-file"),
+    (["--text", "A", "-i", "x.wav"], "-i and --test-tone"),
+    (["--text", "A", "--test-tone", "1000"], "-i and --test-tone"),
+    (["--text", "A", "--mark-hz", "100"], "--mark-hz"),
+    (["--text", "A", "--mark-hz", "3000"], "--mark-hz"),
+    (["--text", "A", "--shift-hz", "0"], "--shift-hz"),
+    (["--text", "A", "--baud-rate", "10"], "--baud-rate"),
+    (["--text", "A", "--edge", "0.6"], "--edge"),
+    (["--text", "A", "--repeat-count", "0"], "--repeat-count"),
+    (["--text", "A", "--repeat-interval", "0.5"], "--repeat-interval"),
+    (["--text", "A" * 40000], "3500 s"),
+])
+def test_rtty_refuses_bad_arguments(extra, message):
+    with pytest.raises(SystemExit) as e:
+        cli_tx.main(RTTY + extra + ["--dry-run"])
+    assert message in str(e.value)
+
+
+def test_rtty_options_do_not_belong_to_the_voice_modes():
+    with pytest.raises(SystemExit) as e:
+        cli_tx.main(["-f", "2350", "--test-tone", "1000", "--text", "A", "--dry-run", "--accept-licence"])
+    assert "belong to -m rtty" in str(e.value)
+
+
+def test_rtty_tones_must_stay_inside_the_band():
+    with pytest.raises(SystemExit) as e:
+        cli_tx.main(["-f", "2449.999", "-m", "rtty", "--text", "A", "--mark-hz", "2700", "--shift-hz", "1000", "--dry-run", "--accept-licence"])
+    assert "outside" in str(e.value)
+
+
+def test_rtty_dry_run_says_what_it_would_send(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    called = []
+    monkeypatch.setattr("espdr.board.ensure", lambda *a, **k: called.append(1))
+    assert cli_tx.main(RTTY + ["--text", "RYRY DE TEST", "--dry-run", "--power", "-6"]) == 0
+    assert not called
+    err = capsys.readouterr().err
+    assert "RTTY (FSK)" in err and "45.45 baud" in err and "dry run" in err and "RTTY text, 12 characters" in err
+
+
+def test_rtty_text_file_and_escapes(tmp_path):
+    f = tmp_path / "t.txt"
+    f.write_text("CQ\nDE X\n")
+    a = cli_tx.build_parser().parse_args(RTTY + ["--text-file", str(f)])
+    assert cli_tx._rtty_text(a) == "CQ\r\nDE X\r\n"
+    b = cli_tx.build_parser().parse_args(RTTY + ["--text", "A\\r\\nB"])
+    assert cli_tx._rtty_text(b) == "A\r\nB"
+
+
+def test_rtty_session_against_the_simulated_chip_and_repeat(tmp_path, monkeypatch, capsys):
+    import numpy as np
+    from espdr import nb, rtty, sim, txmodes
+    from helpers import ideal_polar, instantaneous_frequency
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    esp = sim.SimTx(speed=1.0)                                 # real time: the host thread must keep up, as with the real chip
+    begins = []
+    played = []
+    orig = sim.SimTx._execute
+
+    def execute(self, op, arg, seq):
+        if op == 44:                                                    # TX_OP_BEGIN: the records of the session before are complete
+            begins.append(len(self.played))
+            played.append(list(self.played))
+        return orig(self, op, arg, seq)
+
+    monkeypatch.setattr(sim.SimTx, "_execute", execute)
+    monkeypatch.setattr("espdr.board.ensure", lambda *a, **k: "sim")
+    monkeypatch.setattr("espdr.nb.open_link", lambda port: nb.Link(esp))
+    text = "RY"
+    rc = cli_tx.main(RTTY + ["--text", text, "-q", "--repeat-count", "2", "--repeat-interval", "1"])
+    assert rc == 0
+    assert len(begins) == 2 and begins[1] > 0                         # two sessions, the first one played records
+    err = capsys.readouterr().err
+    assert "pause of 1 s" in err and "transmission 2 of 2" in err
+    for rec in (np.array(played[1], dtype=np.uint32), np.array(esp.played, dtype=np.uint32)):
+        f = instantaneous_frequency(ideal_polar(rec), 40000)
+        assert rtty.decode_frequency(f, 40000) == text
+        assert {int(r >> 16) & 0xFF for r in rec} - {127} == {txmodes.peak_code(0.0)}      # constant gain; 127 is the end record of the session
