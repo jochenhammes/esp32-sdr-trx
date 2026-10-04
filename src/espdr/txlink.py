@@ -27,6 +27,11 @@ def lo_word(hz):
     return scaled - 32 * 65536
 
 
+def word_hz(word):
+    """The LO a PLL word really programs (the inverse of lo_word): 30 MHz * (32 + W / 65536); it can differ from the requested frequency by up to 229 Hz."""
+    return 30e6 * (32 + word / 65536)
+
+
 def choose_lo(hz, max_offset_steps=44):
     """Moves the requested LO by the smallest amount that puts the low byte of the PLL word into 48 .. 207, where the offsets of a
     modulated signal cannot carry into the next byte. Returns (lo_hz in steps of 100 Hz, shift in Hz)."""

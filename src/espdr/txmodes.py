@@ -1,4 +1,4 @@
-"""FM and SSB modulators for the ESP32-S3 transmitter.
+"""FM, SSB and FSK modulators for the ESP32-S3 transmitter.
 
 The chip has no I/Q input. What it can do is move its carrier in frequency (the RF PLL's sigma-delta word, 457.76 Hz per step, updated
 40000 times a second) and in amplitude (a gain code, 0.28 dB per step over 18 dB). A modulator turns 8 kHz audio into one 32-bit record per
@@ -7,6 +7,7 @@ update (firmware/protocol/transmit.h): the frequency offset in 1/16 word steps, 
 FM  sets the frequency from the audio and keeps the gain constant.
 SSB is polar modulation: the analytic signal of the audio (the audio plus j times its Hilbert transform: positive frequencies only, which is
     the upper sideband) plus a carrier gives an envelope, sent as the gain code, and a phase, sent as its derivative, the frequency.
+FSK sends a given frequency (RTTY: two values) with a constant gain, like FM without audio.
 """
 import numpy as np
 
@@ -98,6 +99,30 @@ class FmModulator:
 
     def trim(self, ppm):
         self.up.trim = ppm
+
+
+class FskModulator:
+    """Two-tone FSK (RTTY): the input is the frequency of the tone in Hz against a fixed base frequency, one value per update (not audio).
+
+    The gain code stays constant, like FM. `static_hz` is a constant added to every record: the base frequency against the board's LO, which
+    makes up for the LO having been moved to a PLL word that is easy to program (the records can carry about +-19 kHz). Records count in
+    units of Q4_HZ (28.6 Hz): the constant and the steps are rounded to whole units separately, so that the distance of two tones does not
+    depend on where the constant falls."""
+
+    name = "RTTY"
+
+    def __init__(self, rate=40000, power_db=0.0, static_hz=0.0):
+        self.rate = rate
+        self.code = peak_code(power_db)
+        self.static_q4 = int(round(static_hz / Q4_HZ))
+
+    @property
+    def static_hz(self):
+        return self.static_q4 * Q4_HZ
+
+    def process(self, offsets_hz):
+        y = np.asarray(offsets_hz, dtype=float)
+        return pack(np.rint(y / Q4_HZ) + self.static_q4, np.full(len(y), self.code, dtype=np.uint32))
 
 
 class SsbModulator:

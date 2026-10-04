@@ -2,30 +2,12 @@ import numpy as np
 import pytest
 
 from espdr import txmodes as tm
-
-
-def ideal_polar(rec, rate=40000):
-    """The signal an ideal transmitter makes of the records: the gain path responds one update before the frequency path."""
-    q4 = (rec & 0xFFFF).astype(np.uint16).view(np.int16).astype(float)
-    ph = 2 * np.pi * np.cumsum(q4 * tm.Q4_HZ) / rate
-    amp = 10 ** (-(tm.RANGE_DB - tm.db_of_code(((rec >> 16) & 0xFF).astype(float))) / 20)
-    return np.roll(amp, -1) * np.exp(1j * ph)
-
-
-def run(mod, x):
-    return np.concatenate([mod.process(x[i:i + 160]) for i in range(0, len(x), 160)])
+from helpers import ideal_polar, run, spectrum
 
 
 def two_tone(f1=700, f2=1700, secs=1.0):
     t = np.arange(int(8000 * secs)) / 8000.0
     return 0.5 * np.sin(2 * np.pi * f1 * t) + 0.5 * np.sin(2 * np.pi * f2 * t)
-
-
-def spectrum(s, rate=40000):
-    s = s[8000:-2000]
-    sp = np.abs(np.fft.fftshift(np.fft.fft(s * np.hanning(len(s)))))
-    f = np.fft.fftshift(np.fft.fftfreq(len(s), 1 / rate))
-    return lambda hz: sp[np.abs(f - hz) < 40].max()
 
 
 @pytest.mark.parametrize("carrier", [0.55, 0.05, 0.0])

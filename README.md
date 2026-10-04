@@ -10,8 +10,8 @@ document. This project uses both, on a plain dev board with a USB cable and no F
 
 * **Receive** (`espdr-rx`): 1.84 to 2.79 GHz, 250 or 333 ksps of 8-bit I/Q. The chip decimates its 16 Msps ADC stream itself; a bridge makes it an
   `rtl_tcp` server, so **SDR++**, GNU Radio and anything else that speaks `rtl_tcp` can use it.
-* **Transmit** (`espdr-tx`): narrowband **FM** and **SSB (USB/LSB)** voice in the 13 cm amateur band (2320 to 2450 MHz), from a WAV file, a pipe or
-  a sound card. It is an *experiment* that works: the chip's carrier is steered in frequency and amplitude by software (polar modulation),
+* **Transmit** (`espdr-tx`): narrowband **FM** and **SSB (USB/LSB)** voice and **RTTY** in the 13 cm amateur band (2320 to 2450 MHz), from a WAV file, a pipe,
+  a sound card or a text. It is an *experiment* that works: the chip's carrier is steered in frequency and amplitude by software (polar modulation),
   which needs no sample buffers and can run for as long as you like. The chip also has a raw I/Q playback engine (samples from SRAM at up to 80 Msps, found by
   h0m3us3r and reproduced here, see [the research notes](docs/research/TX-RESEARCH.md#stage-6-raw-iq-transmit-confirmed-by-h0m3us3r-reported-not-yet-reproduced-here)); this transmitter does not use it yet. Transmitting takes an amateur radio licence; read [the transmitter guide](docs/transmitter.md) first.
 
@@ -19,9 +19,9 @@ document. This project uses both, on a plain dev board with a USB cable and no F
 |---|---|---|
 | Command | `espdr-rx` | `espdr-tx` |
 | Range | 1.84 to 2.79 GHz | 2.32 to 2.45 GHz |
-| Bandwidth | 250 ksps (±100 kHz) or 333 ksps (±133 kHz) | voice, 300 to 3000 Hz |
-| Modes | rtl_tcp server | FM (±2.5 kHz), USB, LSB |
-| Sources | the Wi-Fi front end | WAV file, `-` (pipe), sound card |
+| Bandwidth | 250 ksps (±100 kHz) or 333 ksps (±133 kHz) | voice, 300 to 3000 Hz; RTTY 170 Hz shift |
+| Modes | rtl_tcp server | FM (±2.5 kHz), USB, LSB, RTTY |
+| Sources | the Wi-Fi front end | WAV file, `-` (pipe), sound card; RTTY: text or text file |
 | Status | stable, one board tested | experimental, one board tested |
 
 ## Install
@@ -48,6 +48,7 @@ espdr-rx                                      # loads the receiver firmware if n
 espdr-tx --accept-licence -f 2350 -i speech.wav                  # FM voice from a WAV file (the first time only: --accept-licence)
 espdr-tx -f 2350 -m usb -i soundcard --power -6                  # SSB from the sound card, 6 dB below the strongest setting
 arecord -f S16_LE -r 16000 -c 1 | espdr-tx -f 2350 -m usb -i - --rate 16000   # raw samples from a pipe
+espdr-tx -f 2350 -m rtty --text "RYRY CQ CQ DE <your call sign> K"            # RTTY, 45.45 baud, 170 Hz shift (the tones of pluto-tx)
 ```
 
 Both tools load the right firmware into the board's RAM by themselves and switch it when needed (a few seconds); nothing is written to the

@@ -1,6 +1,6 @@
-# The transmitter: FM and SSB voice from an ESP32-S3
+# The transmitter: FM and SSB voice and RTTY from an ESP32-S3
 
-`espdr-tx` sends narrowband FM or single-sideband voice from an ESP32-S3 board on the 13 cm band (2320 to 2450 MHz). It uses the chip's Wi-Fi test tone, which can be steered in frequency and amplitude (polar modulation), and that is enough for voice.
+`espdr-tx` sends narrowband FM or single-sideband voice, or RTTY text, from an ESP32-S3 board on the 13 cm band (2320 to 2450 MHz). It uses the chip's Wi-Fi test tone, which can be steered in frequency and amplitude (polar modulation), and that is enough for voice and for RTTY.
 The chip also has an I/Q playback engine (see the research notes) that this transmitter does not use. This page is the user guide. The command line reference
 is [espdr-tx.md](espdr-tx.md) (and `espdr-tx -h`), how it works is in [internals.md](internals.md), and every measurement is in
 [the research notes](research/TX-RESEARCH.md).
@@ -15,7 +15,7 @@ is [espdr-tx.md](espdr-tx.md) (and `espdr-tx -h`), how it works is in [internals
   antenna is made for Wi-Fi. Do not connect an amplifier or an antenna of gain without measuring what comes out of it.
 * **The firmware only sends inside 2320 to 2450 MHz** and ends every transmission itself if the host stops sending for half a second
   (tested by killing the tool in the middle of a transmission: the carrier was gone 0.54 s later).
-* It is experimental and was tested on one board. Voice only: no data modes, no receive while transmitting.
+* It is experimental and was tested on one board. Voice and RTTY only: no other data modes, no receive while transmitting.
 
 ## What you need
 
@@ -56,6 +56,7 @@ voice sits 300 to 2700 Hz above it (LSB: below).
 | `-m fm` | narrowband FM, ±2.5 kHz at full-scale audio, with the usual voice pre-emphasis (+6 dB per octave from 300 to 3000 Hz) | to be heard by any NBFM receiver; most forgiving |
 | `-m usb` | upper sideband, polar modulation, 5 % pilot carrier by default | weak signal work above 10 MHz is USB by convention |
 | `-m lsb` | lower sideband | |
+| `-m rtty` | text as two-tone FSK (Baudot, 45.45 baud, 170 Hz shift by default): true FSK, the amplitude stays constant | RTTY; the tones are those of the RTTY mode of pluto-tx |
 
 Options: `--deviation HZ` (FM), `--no-preemph`, `--carrier FRACTION` (SSB: the carrier's share of the peak envelope; `0` suppresses it fully,
 `0.5` or more makes a signal that an AM receiver also copies), `--gain DB` and `--no-agc` for the audio level. The audio is band-limited, passes
@@ -64,6 +65,26 @@ a speech AGC and is clipped at full scale, so loud input cannot overdrive the mo
 Measured with a two-tone test (700 and 1700 Hz) and the carrier reduced step by step: the unwanted sideband stays 29 to 63 dB below the
 wanted tones and third-order intermodulation 33 to 54 dB below them, from a 55 % carrier down to a completely suppressed one. That is the quality
 of a plain amateur SSB transceiver. Speech was understood on a second computer with a HackRF and SDR++ in all of the modes above.
+
+## RTTY
+
+```sh
+espdr-tx -f 2350 -m rtty --text "RYRY CQ CQ DE <your call sign> K"
+espdr-tx -f 2350 -m rtty --text-file message.txt --baud-rate 50 --repeat-count 3 --repeat-interval 30
+```
+
+`-f` is the **dial frequency of an upper-sideband transmitter**, as with the RTTY mode of pluto-tx: the mark tone sits `--mark-hz` (2125 Hz) above it and
+the space tone `--shift-hz` (170 Hz) above the mark. The same `-f` therefore gives the same signal on the air, and an RTTY receiver in upper sideband, or the RTTY decoder of
+pluto-tx, copies it on the same dial setting. `--reverse` swaps which tone is mark. The first line of the output prints the two tone frequencies, which are what to tune to if the
+receiver has no dial in this sense. The tones come out within about 15 Hz of the frequencies asked for (the records count in steps of 28.6 Hz); `--ppm` matters as for the other modes.
+On the few percent of frequencies where the PLL word is far from the one asked for, the move of the LO is larger than the records can make up for, and the tool warns and
+says how far off the tones are; change `-f` by a few kHz then.
+
+The transmitter is not keyed off between the characters: it sends the mark tone for a second before the text and 0.2 s after it, and the carrier is switched off at the end. The text goes out
+as US Baudot with letters and figures shifts (a space returns to letters), 1 start bit, 5 data bits, 1.5 stop bits; letters are sent as capitals and what the table lacks as `?`.
+In `--text` the typed characters `\r` and `\n` are sent as carriage return and line feed; `--text-file` (`-` for stdin) turns line ends into CR LF. The steps between the tones are
+rounded over 0.2 bit (`--edge`; `0` makes abrupt steps) to keep the occupied bandwidth down. **The tool adds no call sign or identification: put yours in the text.** The audio options, `--deviation`,
+`--carrier` and `--duration` do not apply to RTTY.
 
 ## Power
 
@@ -100,7 +121,7 @@ muted microphone or the wrong input. A sound card's clock differs slightly from 
 
 ## Limits
 
-* One board, one host. Frequencies 2320 to 2450 MHz only. Voice only.
+* One board, one host. Frequencies 2320 to 2450 MHz only. Voice and RTTY only.
 * Not calibrated, harmonics not measured, no output filter: do not use it near sensitive services, and keep it short and low.
 * The PLL steps are 458 Hz, so FM and SSB are quantised in frequency; error feedback pushes the error out of the voice band (SINAD about 19 to 31 dB
   in the voice band, which is why it sounds like a plain NBFM or SSB radio and not like a broadcast).

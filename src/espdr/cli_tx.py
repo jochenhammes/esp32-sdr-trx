@@ -1,14 +1,15 @@
-"""espdr-tx: transmit FM or SSB voice from an ESP32-S3 board on the 13 cm band."""
+"""espdr-tx: transmit FM or SSB voice, or RTTY, from an ESP32-S3 board on the 13 cm band."""
 import argparse
 import os
 import queue
+import re
 import signal
 import sys
 import threading
 import time
 from pathlib import Path
 
-from . import __version__, audio, board, nb, txlink, txmodes
+from . import __version__, audio, board, nb, rtty, txlink, txmodes
 
 LICENCE_NOTICE = """\
 Transmitting takes an amateur radio licence, and you are responsible for what you send. This transmitter is a Wi-Fi chip's
@@ -26,6 +27,7 @@ examples:
   arecord -f S16_LE -r 16000 -c 1 | espdr-tx -f 2350 -m usb -i - --rate 16000     raw samples from a pipe
   sox music.mp3 -t wav - | espdr-tx -f 2350 -i -             a WAV stream from a pipe
   espdr-tx -f 2350 --test-tone 1000 --duration 5             a 1 kHz tone for 5 seconds
+  espdr-tx -f 2350 -m rtty --text "RYRY CQ CQ DE TEST"       RTTY, 45.45 baud, 170 Hz shift (true FSK)
   espdr-tx -f 2350 -i speech.wav --dry-run                   show what would happen, send nothing
   espdr-tx --list-devices                                    list sound card inputs
 
@@ -56,7 +58,9 @@ def build_parser():
     p.add_argument("-V", "--version", action="version", version=f"espdr-tx {__version__}")
     main = p.add_argument_group("what to send")
     main.add_argument("-f", "--freq", type=float, metavar="MHZ", help="carrier frequency in MHz (2320 .. 2450); required")
-    main.add_argument("-m", "--mode", choices=("fm", "usb", "lsb"), default="fm", help="fm: narrowband FM; usb or lsb: single sideband (default fm)")
+    main.add_argument("-m", "--mode", choices=("fm", "usb", "lsb", "rtty"), default="fm",
+                      help="fm: narrowband FM; usb or lsb: single sideband; rtty: text as two-tone FSK, the audio, FM and SSB options "
+                           "and --duration do not apply (default fm)")
     src = p.add_argument_group("audio source")
     src.add_argument("-i", "--input", metavar="SOURCE",
                      help="a WAV file, '-' for a pipe on stdin (a WAV stream or raw samples), or 'soundcard' / 'soundcard:DEVICE' "
@@ -83,6 +87,23 @@ def build_parser():
                      help="the carrier's share of the peak envelope, 0 .. 0.9: 0 suppresses it, 0.05 leaves a faint pilot to tune to (default)")
     ssb.add_argument("--ssb-delay", type=float, default=1.0, metavar="UPDATES",
                      help="delay of the gain path against the frequency path in 25 us updates (default 1.0, measured on one board)")
+    rt = p.add_argument_group("RTTY (-m rtty)")
+    rt.add_argument("--text", metavar="TEXT", help="the text to send; the typed characters \\r and \\n are sent as carriage return and line feed. "
+                                                   "Put your call sign in it: the tool adds none")
+    rt.add_argument("--text-file", metavar="FILE", help="send the text of this file ('-' for stdin); line ends are sent as CR LF")
+    rt.add_argument("--mark-hz", type=float, default=rtty.MARK_DEFAULT, metavar="HZ",
+                    help="the mark tone above -f, 300 .. 2700 (default 2125). -f is the dial frequency of an upper-sideband transmitter, "
+                         "as with pluto-tx: the same -f gives the same tones")
+    rt.add_argument("--shift-hz", type=float, default=rtty.SHIFT_DEFAULT, metavar="HZ",
+                    help="space minus mark, 1 .. 1000 (default 170; common: 170, 425, 850)")
+    rt.add_argument("--baud-rate", type=float, default=rtty.BAUD_DEFAULT, metavar="BAUD",
+                    help="20 .. 200 (default 45.45; common: 45.45, 50, 75, 100)")
+    rt.add_argument("--reverse", action="store_true", help="swap which tone is mark (for a station with flipped polarity)")
+    rt.add_argument("--edge", type=float, default=0.2, metavar="BITS",
+                    help="rise time of the frequency steps in bit periods, 0 .. 0.5 (default 0.2; 0 = abrupt steps)")
+    rt.add_argument("--repeat-count", type=int, default=1, metavar="N", help="send the text N times, 1 .. 999 (default 1)")
+    rt.add_argument("--repeat-interval", type=float, default=10.0, metavar="SECONDS",
+                    help="pause between two transmissions, 1 .. 86400; the transmitter is off in between (default 10)")
     run = p.add_argument_group("session")
     run.add_argument("--duration", type=float, metavar="SECONDS", help="stop after this many seconds (default: until the source ends)")
     run.add_argument("--update-rate", type=int, default=40000, metavar="HZ", help="records per second sent to the chip, 8000 .. 40000 (default 40000)")
@@ -104,7 +125,9 @@ def build_parser():
     return p
 
 
-def _modulator(args, power_db):
+def _modulator(args, power_db, plan=None):
+    if args.mode == "rtty":
+        return txmodes.FskModulator(rate=args.update_rate, power_db=power_db, static_hz=plan["static_hz"])
     if args.mode == "fm":
         return txmodes.FmModulator(rate=args.update_rate, deviation=args.deviation, power_db=power_db, preemph=not args.no_preemph,
                                    agc=not args.no_agc, gain_db=args.gain)
@@ -135,59 +158,59 @@ def _blocks(args, stop):
     return gen(), (mono if live else None), desc
 
 
-def run(args, out=None):
+def _rtty_text(args):
+    if args.text_file:
+        raw = sys.stdin.read() if args.text_file == "-" else Path(args.text_file).read_text(errors="replace")
+        return re.sub(r"\r?\n", "\r\n", raw)
+    return args.text.replace("\\r", "\r").replace("\\n", "\n")
+
+
+def _check_rtty(args):
+    """Arguments of -m rtty; returns the text."""
+    if (args.text is None) == (args.text_file is None):
+        raise SystemExit("espdr-tx: -m rtty needs exactly one of --text and --text-file")
+    if args.input or args.test_tone:
+        raise SystemExit("espdr-tx: -m rtty sends text; -i and --test-tone are for the audio modes")
+    if not 300 <= args.mark_hz <= 2700:
+        raise SystemExit("espdr-tx: --mark-hz must be between 300 and 2700")
+    if not 1 <= args.shift_hz <= 1000:
+        raise SystemExit("espdr-tx: --shift-hz must be between 1 and 1000")
+    if not 20 <= args.baud_rate <= 200:
+        raise SystemExit("espdr-tx: --baud-rate must be between 20 and 200")
+    if not 0 <= args.edge <= 0.5:
+        raise SystemExit("espdr-tx: --edge must be between 0 and 0.5")
+    if not 1 <= args.repeat_count <= 999:
+        raise SystemExit("espdr-tx: --repeat-count must be between 1 and 999")
+    if not 1 <= args.repeat_interval <= 86400:
+        raise SystemExit("espdr-tx: --repeat-interval must be between 1 and 86400")
+    text = _rtty_text(args)
+    if rtty.estimate_duration(text, args.baud_rate) > 3500:
+        raise SystemExit("espdr-tx: the text takes more than 3500 s to send; the chip ends a transmission after 3600 s. Send it in parts")
+    return text
+
+
+def _rtty_plan(args):
+    """Where the two tones go. The lower tone is -f + mark; the board's LO is moved to a PLL word that is easy to program (txlink.choose_lo)
+    and a constant in every record makes up for the move, as far as the records reach (about +-19 kHz). The LO is the one the PLL word
+    really programs, and the constant and the shift are whole record units (28.6 Hz): the tones are within about 15 Hz of the wanted ones."""
+    ppm = 1.0 + args.ppm * 1e-6
+    low = args.freq * 1e6 + args.mark_hz
+    if low < txlink.TX_MIN_HZ or low + args.shift_hz > txlink.TX_MAX_HZ:
+        raise SystemExit(f"espdr-tx: the tones ({low / 1e6:.6f} and {(low + args.shift_hz) / 1e6:.6f} MHz) are outside 2320 .. 2450 MHz")
+    lo_hz, _ = txlink.choose_lo(low / ppm)
+    lo_real = txlink.word_hz(txlink.lo_word(lo_hz)) * ppm
+    unit = txmodes.Q4_HZ * ppm                                          # one record unit on the air
+    shift_q4 = max(1, int(round(args.shift_hz / unit)))
+    static_q4 = int(round((low - lo_real) / unit))
+    clamped = min(max(static_q4, -txmodes.MAX_Q4), txmodes.MAX_Q4 - shift_q4)
+    low_real = lo_real + clamped * unit
+    return dict(lo_hz=lo_hz, static_hz=clamped * txmodes.Q4_HZ, shift_nominal=shift_q4 * txmodes.Q4_HZ, low_hz=low_real,
+                shift_real=shift_q4 * unit, miss_hz=low_real - low)
+
+
+def _transmit(args, out, mod, session, lo_hz, stop, interrupted, blocks, live, stream):
+    """One transmission: configure and begin the chip, feed it, report. Returns (the chip's summary, ended by the user)."""
     import numpy as np
-    out = out or sys.stderr
-    if args.selftest:
-        return selftest()
-    if args.list_devices:
-        for line in audio.list_devices() or ["  (no sound card input found)"]:
-            print(line)
-        return 0
-    if args.freq is None:
-        raise SystemExit("espdr-tx: --freq is required (for example: espdr-tx -f 2350 -i speech.wav); see espdr-tx -h")
-    if not args.input and not args.test_tone:
-        raise SystemExit("espdr-tx: give an audio source with -i (a WAV file, '-' for stdin, or 'soundcard') or use --test-tone")
-    if not txlink.TX_MIN_HZ / 1e6 <= args.freq <= txlink.TX_MAX_HZ / 1e6:
-        raise SystemExit(f"espdr-tx: {args.freq:g} MHz is outside 2320 .. 2450 MHz, the only range this transmitter sends in")
-    if not 8000 <= args.update_rate <= 40000 or args.update_rate % 8000:
-        raise SystemExit("espdr-tx: --update-rate must be 8000, 16000, 24000, 32000 or 40000")
-    if not 0 <= args.carrier <= 0.9:
-        raise SystemExit("espdr-tx: --carrier must be between 0 and 0.9")
-    try:
-        mod = _modulator(args, args.power)
-    except ValueError as e:
-        raise SystemExit(f"espdr-tx: {e}")
-
-    # the carrier the board has to produce: the request corrected for the crystal, moved a little if its PLL word is near a byte boundary
-    want_hz = args.freq * 1e6 / (1.0 + args.ppm * 1e-6)
-    lo_hz, shift = txlink.choose_lo(want_hz)
-    actual = lo_hz * (1.0 + args.ppm * 1e-6) / 1e6
-    print(f"espdr-tx {__version__}: {mod.name} voice at {actual:.4f} MHz"
-          + (f" (you asked for {args.freq:.4f}; the PLL word allows only this near it)" if abs(actual - args.freq) > 0.00005 else "")
-          + f", power {args.power:g} dB, gain codes {txmodes.peak_code(args.power)}..{txmodes.GAIN_WEAKEST}"
-          + (f", carrier {args.carrier:g}" if args.mode != "fm" else f", deviation {args.deviation:g} Hz")
-          + f", {args.update_rate} updates/s", file=out)
-    if args.power < -9 and args.mode != "fm":
-        print(f"note: at {args.power:g} dB the SSB amplitude range shrinks to {txmodes.RANGE_DB + args.power:.1f} dB; expect more distortion", file=out)
-    if not (_licence_accepted() or args.accept_licence):
-        print(LICENCE_NOTICE, file=out)
-        raise SystemExit("espdr-tx: read the notice above; run once with --accept-licence to confirm it")
-    if args.accept_licence and not _licence_accepted():
-        _accept_licence()
-    if args.dry_run:
-        stop = threading.Event()
-        _, _, desc = _blocks(args, stop)
-        print(f"dry run: would send {desc}; nothing is sent and the board is not touched", file=out)
-        return 0
-
-    stop = threading.Event()
-    blocks, live, desc = _blocks(args, stop)
-    print(f"source: {desc}", file=out)
-    port = board.ensure(board.TX, port=args.port, bridge=args.bridge_port, load="never" if args.no_load else ("always" if args.reload else "auto"),
-                        native=args.native, image=args.image, log=lambda m: print(m, file=out))
-    link = nb.open_link(port)
-    session = txlink.Session(link)
     session.configure(lo_hz, args.update_rate, drift_hz=args.drift, limit_s=3600)
     session.begin(expect_word=txlink.lo_word(lo_hz))
 
@@ -198,10 +221,12 @@ def run(args, out=None):
     def producer():
         try:
             for b in blocks:
-                level[0] = 20 * np.log10(max(float(np.sqrt(np.mean(np.square(b)))), 1e-6))
+                if stream is None:
+                    level[0] = 20 * np.log10(max(float(np.sqrt(np.mean(np.square(b)))), 1e-6))
                 q.put(mod.process(b))
-            for _ in range(10):                                  # flush the filters with silence
-                q.put(mod.process(np.zeros(160)))
+            if stream is None:
+                for _ in range(10):                          # flush the filters with silence
+                    q.put(mod.process(np.zeros(160)))
         except Exception as e:                                   # noqa: BLE001 - reported by the main thread
             err.append(e)
         finally:
@@ -213,6 +238,7 @@ def run(args, out=None):
     last_print = [0.0]
     warned = [False]
     trim = [0.0]
+    by_user = [False]
 
     def on_status(ev):
         if live is not None:
@@ -222,16 +248,23 @@ def run(args, out=None):
         now = time.monotonic()
         if not args.quiet and now - last_print[0] > 0.5:
             last_print[0] = now
-            print(f"\r  on air {now - started:6.1f} s   audio {level[0]:6.1f} dBFS   buffer {ev['fill'] * 1000 // args.update_rate:4d} ms   underruns {ev['underruns']}   late {ev['late']}   ",
+            what = f"sent {100 * stream.fraction():3.0f} %" if stream is not None else f"audio {level[0]:6.1f} dBFS"
+            print(f"\r  on air {now - started:6.1f} s   {what}   buffer {ev['fill'] * 1000 // args.update_rate:4d} ms   underruns {ev['underruns']}   late {ev['late']}   ",
                   end="", file=out, flush=True)
-            if level[0] < -70 and now - started > 3 and not warned[0]:
+            if stream is None and level[0] < -70 and now - started > 3 and not warned[0]:
                 warned[0] = True
                 print("\nwarning: almost no audio arrives (input level below -70 dBFS). Is the microphone muted or the wrong input chosen? "
                       "See --list-devices and -i soundcard:NUMBER.", file=out)
-        if args.duration and now - started >= args.duration:
+        if stream is None and args.duration and now - started >= args.duration:
+            by_user[0] = True
             stop.set()
 
-    old = signal.signal(signal.SIGINT, lambda *a: stop.set())
+    def on_sigint(*_):
+        interrupted.set()
+        by_user[0] = True
+        stop.set()
+
+    old = signal.signal(signal.SIGINT, on_sigint)
     try:
         summary = session.stream(q, target_fill=8000, on_status=on_status, stop=stop)
     finally:
@@ -241,11 +274,103 @@ def run(args, out=None):
     if err:
         raise SystemExit(f"espdr-tx: {err[0]}")
     print(f"done: {txlink.END_REASONS.get(summary['reason'], summary['reason'])}; underruns {summary['underruns']}, late updates {summary['late']}", file=out)
+    return summary, by_user[0]
+
+
+def run(args, out=None):
+    out = out or sys.stderr
+    if args.selftest:
+        return selftest()
+    if args.list_devices:
+        for line in audio.list_devices() or ["  (no sound card input found)"]:
+            print(line)
+        return 0
+    is_rtty = args.mode == "rtty"
+    if args.freq is None:
+        raise SystemExit("espdr-tx: --freq is required (for example: espdr-tx -f 2350 -i speech.wav); see espdr-tx -h")
+    if is_rtty:
+        text = _check_rtty(args)
+    else:
+        if args.text is not None or args.text_file is not None or args.repeat_count != 1:
+            raise SystemExit("espdr-tx: --text, --text-file and --repeat-count belong to -m rtty")
+        if not args.input and not args.test_tone:
+            raise SystemExit("espdr-tx: give an audio source with -i (a WAV file, '-' for stdin, or 'soundcard') or use --test-tone")
+    if not txlink.TX_MIN_HZ / 1e6 <= args.freq <= txlink.TX_MAX_HZ / 1e6:
+        raise SystemExit(f"espdr-tx: {args.freq:g} MHz is outside 2320 .. 2450 MHz, the only range this transmitter sends in")
+    if not 8000 <= args.update_rate <= 40000 or args.update_rate % 8000:
+        raise SystemExit("espdr-tx: --update-rate must be 8000, 16000, 24000, 32000 or 40000")
+    if not 0 <= args.carrier <= 0.9:
+        raise SystemExit("espdr-tx: --carrier must be between 0 and 0.9")
+    plan = _rtty_plan(args) if is_rtty else None
+    try:
+        mod = _modulator(args, args.power, plan)
+    except ValueError as e:
+        raise SystemExit(f"espdr-tx: {e}")
+
+    if is_rtty:
+        lo_hz = plan["lo_hz"]
+        frames = rtty.message_frames(text, args.baud_rate)
+        duration = rtty.duration_s(frames, args.baud_rate)
+        low_hz = plan["low_hz"]
+        mark_is = "high" if args.reverse else "low"
+        print(f"espdr-tx {__version__}: RTTY (FSK) low tone {low_hz / 1e6:.6f} MHz, high tone {(low_hz + plan['shift_real']) / 1e6:.6f} MHz "
+              f"(shift {plan['shift_real']:.1f} Hz, mark is the {mark_is} tone), {args.baud_rate:g} baud, {len(text)} characters, about {duration:.1f} s, "
+              f"power {args.power:g} dB, gain code {txmodes.peak_code(args.power)}, edge {args.edge:g} bit, {args.update_rate} updates/s", file=out)
+        if abs(plan["miss_hz"]) > 20:
+            print(f"warning: the PLL word cannot reach the wanted frequency here; the tones are {plan['miss_hz']:+.0f} Hz off. "
+                  f"Tune your receiver to the tones above, or change -f by a few kHz", file=out)
+    else:
+        # the carrier the board has to produce: the request corrected for the crystal, moved a little if its PLL word is near a byte boundary
+        want_hz = args.freq * 1e6 / (1.0 + args.ppm * 1e-6)
+        lo_hz, shift = txlink.choose_lo(want_hz)
+        actual = lo_hz * (1.0 + args.ppm * 1e-6) / 1e6
+        print(f"espdr-tx {__version__}: {mod.name} voice at {actual:.4f} MHz"
+              + (f" (you asked for {args.freq:.4f}; the PLL word allows only this near it)" if abs(actual - args.freq) > 0.00005 else "")
+              + f", power {args.power:g} dB, gain codes {txmodes.peak_code(args.power)}..{txmodes.GAIN_WEAKEST}"
+              + (f", carrier {args.carrier:g}" if args.mode != "fm" else f", deviation {args.deviation:g} Hz")
+              + f", {args.update_rate} updates/s", file=out)
+        if args.power < -9 and args.mode != "fm":
+            print(f"note: at {args.power:g} dB the SSB amplitude range shrinks to {txmodes.RANGE_DB + args.power:.1f} dB; expect more distortion", file=out)
+    if not (_licence_accepted() or args.accept_licence):
+        print(LICENCE_NOTICE, file=out)
+        raise SystemExit("espdr-tx: read the notice above; run once with --accept-licence to confirm it")
+    if args.accept_licence and not _licence_accepted():
+        _accept_licence()
+
+    def sources():
+        stop = threading.Event()
+        if is_rtty:
+            stream = rtty.OffsetStream(frames, args.update_rate, args.baud_rate, plan["shift_nominal"], args.reverse, args.edge)
+            return stop, stream.blocks(), None, f"RTTY text, {len(text)} characters", stream
+        blocks, live, desc = _blocks(args, stop)
+        return stop, blocks, live, desc, None
+
+    stop, blocks, live, desc, stream = sources()
+    if args.dry_run:
+        print(f"dry run: would send {desc}; nothing is sent and the board is not touched", file=out)
+        return 0
+    print(f"source: {desc}", file=out)
+    port = board.ensure(board.TX, port=args.port, bridge=args.bridge_port, load="never" if args.no_load else ("always" if args.reload else "auto"),
+                        native=args.native, image=args.image, log=lambda m: print(m, file=out))
+    link = nb.open_link(port)
+    session = txlink.Session(link)
+    interrupted = threading.Event()
+    summary, by_user = None, False
+    for n in range(args.repeat_count):
+        if n:
+            print(f"pause of {args.repeat_interval:g} s; the transmitter is off", file=out)
+            if interrupted.wait(args.repeat_interval):
+                break
+            stop, blocks, live, desc, stream = sources()
+            print(f"source: {desc} (transmission {n + 1} of {args.repeat_count})", file=out)
+        summary, by_user = _transmit(args, out, mod, session, lo_hz, stop, interrupted, blocks, live, stream)
+        if interrupted.is_set() or summary["reason"] not in (0, 2):
+            break
     if args.restore:
         print("resetting the board: it boots what its flash holds", file=out)
         if not board.reset(args.bridge_port):
             print("no UART port found; unplug and replug the board (or press RESET) to get the receiver back", file=out)
-    return 0 if summary["reason"] in (0, 2) or stop.is_set() else 1
+    return 0 if summary is None or summary["reason"] in (0, 2) or by_user else 1
 
 
 def selftest():
@@ -281,6 +406,15 @@ def selftest():
     dev = np.abs((rec[len(rec) // 2:] & 0xFFFF).astype(np.uint16).view(np.int16)).max() * txmodes.Q4_HZ
     check("FM deviation", abs(dev - 2000) < 200, f"{dev:.0f} Hz for 0.8 of 2500 Hz (the band-pass is not flat at 1 kHz)")
     check("power setting", [txmodes.peak_code(p) for p in (0, -6, -12)] == [64, 87, 107], "codes for 0, -6, -12 dB")
+
+    text = "RYRY DE TEST 123. CQ (OK)?"
+    stream = rtty.OffsetStream(rtty.message_frames(text), 40000, rtty.BAUD_DEFAULT, 6 * txmodes.Q4_HZ)
+    m = txmodes.FskModulator(static_hz=-3000.0)
+    rec = np.concatenate([m.process(b) for b in stream.blocks()])
+    sig = ideal(rec)
+    inst = np.angle(sig[1:] * np.conj(sig[:-1])) * 40000 / (2 * np.pi)
+    check("RTTY text through the polar model", rtty.decode_frequency(inst, 40000) == text and len({int(r >> 16) for r in rec}) == 1,
+          f"{len(text)} characters")
 
     lo, _ = txlink.choose_lo(2_350_000_000)
     esp = sim.SimTx()

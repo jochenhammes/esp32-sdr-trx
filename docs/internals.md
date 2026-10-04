@@ -197,6 +197,12 @@ Hilbert transform: positive frequencies only, which is the upper sideband), adds
 update. With 40 000 updates per second the figures are: unwanted sideband 61 to 63 dB and third-order intermodulation 33 dB below the wanted tones with a
 fully suppressed carrier.
 
+**RTTY** is plain FSK, not audio: `espdr.rtty` turns the text into Baudot frames (the table, the shift codes and the framing are those of the RTTY mode of
+pluto-tx, and a test compares them), `OffsetStream` turns the frames into the frequency of the tone at the update rate (0 for the lower tone, the shift for the
+upper one, with raised-cosine steps of 0.2 bit by default), and `txmodes.FskModulator` sends that offset as the frequency field of the records with a constant
+gain code, like FM without audio. The records count in units of 28.6 Hz (a sixteenth of a PLL step), so a shift of 170 Hz is six units (171.6 Hz). The host moves the LO to a
+PLL word that is easy to program (see below) and adds the move as a constant to every record, so that the lower tone lands within about 15 Hz of `-f` + mark.
+
 **The stream** (`firmware/protocol/transmit.h`). `TX_BEGIN` tunes the PLL (the receiver is released), then the host sends one 32-bit record per update:
 
 ```
