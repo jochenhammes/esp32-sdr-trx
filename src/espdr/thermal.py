@@ -14,14 +14,14 @@ from .txmodes import MAX_Q4, Q4_HZ
 REF_HZ = 2350e6                          # the frequency the parameters were measured at; the error is in ppm of the carrier
 
 DEFAULT = dict(
-    t0=47.91,                             # turning point of the crystal, degrees C on the chip's sensor scale
-    k=22.29,                              # Hz per degree^2 at 2350 MHz
+    t0=47.09,                             # turning point of the crystal, degrees C on the chip's sensor scale
+    k=19.47,                              # Hz per degree^2 at 2350 MHz
     t_inf=58.0,                          # temperature the chip heads to while it transmits
-    tau_chip=130,                      # s, heating of the chip in a transmission
+    tau_chip=137,                      # s, heating of the chip in a transmission
     tau_xtal=0.5,                       # s, the crystal follows the chip with this lag
     idle=42.0,                           # start temperature assumed without a sensor reading
-    early_hz=1096,                       # slow rise at the switch-on that does not follow the sensor (Hz at 2350 MHz): early_hz * (1 - exp(-t / early_tau))
-    early_tau=56,
+    early_hz=1118,                       # slow rise at the switch-on that does not follow the sensor (Hz at 2350 MHz): early_hz * (1 - exp(-t / early_tau))
+    early_tau=67,
     early_cold_c=0.0,                    # the transient scales with (idle_ref - start temperature) / early_cold_c, 0 = fixed size
 )
 

@@ -11,7 +11,7 @@ document. This project uses both, on a plain dev board with a USB cable and no F
 * **Receive** (`espdr-rx`): 1.84 to 2.79 GHz, 250 or 333 ksps of 8-bit I/Q. The chip decimates its 16 Msps ADC stream itself; a bridge makes it an
   `rtl_tcp` server, so **SDR++**, GNU Radio and anything else that speaks `rtl_tcp` can use it.
 * **Transmit** (`espdr-tx`): narrowband **FM** and **SSB (USB/LSB)** voice and **RTTY** in the 13 cm amateur band (2320 to 2450 MHz), from a WAV file, a pipe,
-  a sound card or a text. It is an *experiment* that works: the chip's carrier is steered in frequency and amplitude by software (polar modulation),
+  a sound card or a text, with an optional cancellation of the carrier's thermal drift (`--thermal`, using the chip's temperature sensor). It is an *experiment* that works: the chip's carrier is steered in frequency and amplitude by software (polar modulation),
   which needs no sample buffers and can run for as long as you like. The chip also has a raw I/Q playback engine (samples from SRAM at up to 80 Msps, found by
   h0m3us3r and reproduced here, see [the research notes](docs/research/TX-RESEARCH.md#stage-6-raw-iq-transmit-confirmed-by-h0m3us3r-reported-not-yet-reproduced-here)); this transmitter does not use it yet. Transmitting takes an amateur radio licence; read [the transmitter guide](docs/transmitter.md) first.
 

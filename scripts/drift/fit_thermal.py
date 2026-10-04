@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Fit the thermal drift model (espdr.thermal) to measured carriers, also to transmissions that were already corrected (their correction is added back).
 
-usage: fit_thermal.py OUT_MODEL.json  ab1.json [ab2.json ...] [--series drift-series.json] [--per-run-offset] [--fixed k=19.1,t0=47.7]
+usage: fit_thermal.py OUT_MODEL.json  ab1.json[@MODEL_USED.json] [ab2.json ...] [--series drift-series.json] [--per-run-offset] [--fixed k=19.1,t0=47.7]
        fit_thermal.py --eval MODEL.json  ab1.json ... [--series ...]      (no fit: the residuals of a model, with the offset it contains)
+A recording made with --thermal needs the model that was in use then (FILE@MODEL.json, a JSON of espdr.thermal.DEFAULT names; default: the current one).
 Prints the parameters and, for every transmission, the residual before and after the fit.
 """
 import json
@@ -82,7 +83,8 @@ def main():
             files.append(a)
     runs = []
     for f in files:
-        runs += runs_ab(json.load(open(f)), thermal.DEFAULT)
+        f, _, used = f.partition("@")
+        runs += runs_ab(json.load(open(f)), thermal.load_params(used or None))
     for f in series:
         runs += runs_series(json.load(open(f)))
     runs = [r for r in runs if len(r["t"]) > 4]

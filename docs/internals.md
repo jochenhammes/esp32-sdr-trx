@@ -217,7 +217,7 @@ keeps the ring near 200 ms. When the ring has 4000 records the carrier comes on,
 one record per update:
 
 1. the frequency offset is turned into word steps with second-order error feedback (noise transfer function `(1 - z^-1)^2`, which moves the 458 Hz quantisation out of
-   the voice band), plus a slowly decaying correction for the thermal drift of the first seconds;
+   the voice band), plus a slowly decaying correction for the thermal drift of the first seconds (the host adds the correction for the minutes that follow to the records, `--thermal`, `src/espdr/thermal.py`);
 2. the gain code is written (a read-modify-write of one register), then the low byte of the PLL word.
 
 The offset is limited to ±44 steps (±20 kHz) and the programmed word's low byte must lie in 48 to 207, so that a modulation never carries into the next byte of the word

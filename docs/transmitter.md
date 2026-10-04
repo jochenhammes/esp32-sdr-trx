@@ -86,6 +86,44 @@ In `--text` the typed characters `\r` and `\n` are sent as carriage return and l
 rounded over 0.2 bit (`--edge`; `0` makes abrupt steps; the measurements below show no difference in the spectrum). Start the text with a few `RY` so that a decoder with automatic tuning has the two tones to lock on: the first seconds of a transmission can be lost. **The tool adds no call sign or identification: put yours in the text.** The audio options, `--deviation`,
 `--carrier` and `--duration` do not apply to RTTY.
 
+## Thermal drift (`--thermal`)
+
+The board warms up while it transmits: the chip's own temperature sensor goes from 42 C (idle) to 57 C within 150 s, and the frequency of the crystal changes with it
+by more than a RTTY decoder can follow (half the shift, 85 Hz) and more than an SSB receiver tolerates. Measured with a PlutoSDR at 2350 MHz, the carrier moved
+**+230 Hz in 15 s, +730 to +860 Hz in 45 s, +1800 to +2050 Hz in 120 s and +2080 Hz in 150 s** when the transmission started at 47 to 50 C; by up to 20 to 38 Hz per second.
+
+```sh
+espdr-tx -f 2350 -m usb -i speech.wav --ppm 5.4 --thermal sensor
+espdr-tx -f 2350 -m rtty --text "RYRY CQ CQ DE <your call sign> K" --thermal sensor
+```
+
+`--thermal sensor` reads the chip's temperature before the transmission (`TX_OP_TEMP`), predicts the frequency error from that and the time since the start with a model of the
+crystal (a parabola around its turning point at 47 C, the chip heating towards 58 C with a time constant of 137 s, and a slower rise of about 1100 Hz that does not follow
+the sensor) and adds the opposite to the frequency field of every record. It works for all modes. `--thermal nominal` does the same without reading the sensor and assumes
+the idle temperature of 42 C (for a transmission after the board has rested for a few minutes; an older firmware image without the sensor falls back to it with a warning).
+`--thermal-model FILE` takes the numbers of another board (a JSON file with the names of `espdr.thermal.DEFAULT`; `scripts/drift/` makes one, see below).
+
+| Transmission (start temperature) | change of the frequency over the transmission without / with `--thermal sensor` |
+|---|---|
+| SSB, 15 s (47 C) | +229 / +197 Hz |
+| SSB, 45 s (46.6 / 48.3 C) | +729 / +188 Hz |
+| RTTY, 45 s (49 / 50 C) | +862 / +252 Hz |
+| SSB, 120 s (50 C) | +1812 / +1041 Hz (first model) |
+| RTTY, 120 s (53 C) | +2048 / +1317 Hz (first model) |
+| SSB, 150 s (47 C) | +2077 / **+162 Hz** |
+| SSB, 120 s (51 C) | / **+191 Hz** |
+| RTTY, 120 s (47 C) / 90 s (44 C) / 60 s (52 C) | / **+202 Hz** / **+172 Hz** / **+165 Hz** |
+| SSB, 30 s (57 C) | / **-40 Hz** |
+
+The rows in bold are with the model that is built in now or the one before its last refit (the same numbers within a few percent), on transmissions that were not used to fit it.
+
+The first seconds are the weak point: after the correction a rise of 50 to 100 Hz in the first 10 s remains (5 to 10 Hz/s, from 20 to 30 Hz/s), and over the whole transmission the frequency stays within about 250 Hz of its value at the start. The tables are for one board
+(the tested one) and one PlutoSDR as referee: the Pluto's own drift is in all of the numbers. The frequency to which the corrected carrier holds depends on the start temperature by
+about +-200 Hz, and sits 0.3 to 0.5 ppm lower than the setting `--ppm 5.4` gave on the cold board: set `--ppm` again with `--thermal` in use. Transmissions longer than 150 s were not measured (the model
+flattens out). The model must be refitted for another board: `scripts/drift/ab_series.py` transmits for about half an hour and records the carrier with a PlutoSDR,
+`scripts/drift/ab_analyse.py` tabulates it, and `scripts/drift/fit_thermal.py OUT.json recording.json[@MODEL_USED.json] ...` fits the numbers for `--thermal-model`.
+The research notes (`docs/research/FREQUENCY-DRIFT.md` on the research branch) hold the raw series.
+
 ## Power
 
 `--power DB` is relative to the strongest setting: `0` (default) to `-17.9`. The amplitude control of the chip covers 18 dB in steps of 0.28 dB, and
@@ -112,7 +150,7 @@ muted microphone or the wrong input. A sound card's clock differs slightly from 
 
 | | |
 |---|---|
-| Carrier | stable to ±12 Hz over 5 s and ±15 Hz over 20 s (the first seconds are cancelled in the firmware: the board's frequency falls by 194 Hz in the first 5 s as it warms up) |
+| Carrier | stable to ±12 Hz over 5 s and ±15 Hz over 20 s (the first seconds are cancelled in the firmware: the board's frequency falls by 194 Hz in the first 5 s as it warms up); over minutes it drifts by up to 2 kHz, see "Thermal drift" above |
 | Data stream | 40 000 records per second, buffer steady at 190 ms for a file, 120 to 140 ms from a sound card; no underrun or late update in the tests (5 s to 30 s, file, pipes, sound card) |
 | Frequencies | 2320.0, 2350.0, 2385.0, 2400.1234, 2449.9 MHz all came out where the tool said (plus the same +12.4 to +13.2 kHz of crystal error); near a PLL byte boundary the tool moves the carrier by up to 22 kHz and says so |
 | Stop | the tool killed mid-transmission: carrier off 0.54 s later (buffer 190 ms plus the 500 ms watchdog) |
