@@ -67,3 +67,13 @@ the residual per transmission to 18..66 Hz rms, and on five new transmissions (v
 Model v3 (all 37 transmissions; k 19.5, t0 47.1 C, 137 s, 1118 Hz, 67 s) was confirmed on three more: SSB 120 s from 51 C +191 Hz (+1812 Hz uncorrected at 50 C), RTTY 120 s from 47 C +202 Hz,
 SSB 30 s from 57 C -40 Hz. The maximum rate falls from 20..38 Hz/s to 4..11 Hz/s. Not done: transmissions longer than 150 s (the model flattens at about 3400 Hz of correction),
 equal start temperatures for the pairs, a second board, the Pluto's own drift (it is in all numbers), a reading of the sensor inside the transmission.
+
+## Second board (2026-10-04, 14:20 to 15:35)
+
+A second board of the same make (bridge serial 5C85035519; the first one is 5C85034836) was measured with the same series (`drift-board2-ab-series.json`), then the first board again after 20 minutes of rest
+(`drift-board1-second-session.json`), then board 2 with its own model (`drift-board2-validation.json`). Both boards have the same crystal error (+5.4 ppm) and the same chip heating (137 s to 58 C; 51.9 C
+predicted, 51.8 C read after 240 s from 23 C), but different crystal curves: turning point 47.1 C (board 1) against 41 C (board 2), early rise 1100 Hz / 67 s against 3100 Hz / 5 s. Cold starts (20 to 23 C): board 1 falls
+by 8.4 kHz in 150 s, board 2 by 4.6 kHz in 90 s, both after a +300 to +370 Hz rise in the first 3 s. With the built-in model (fitted on board 1) board 1 stayed at +27 to +66 Hz over 45 and 120 s; board 2 with that model
+only improved from +2668 to +2041 Hz (45 s). Per-run fits of board 2 show a fast exponential of 3000 to 3300 Hz with 5 to 9 s in every restart and a slow ramp of 18 to 21 Hz/s; its own model (grid fit over
+`t0`, `k`, `k3`, early term; 359 Hz rms over all runs against a spread of 1585 Hz) gave on new runs +107 and +127 Hz over 45 s (uncorrected +2775 and +2668), -323 Hz over 120 s (+4393) and, from a cold start,
+an excursion of 1.2 kHz instead of 4.6 kHz. The start level depends on the history of the board (a restart after 40 s pause begins 1 kHz lower than the model assumes).
