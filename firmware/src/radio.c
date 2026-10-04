@@ -722,7 +722,7 @@ extern int txtone_linear_pwr(void);
 
 static struct {
     bool begun, keyed;
-    int32_t rot_cos, rot_sin, pre_g, pre_p;
+    int32_t rot_cos, rot_sin, rot2_cos, rot2_sin, pre_g, pre_p;
     uint32_t addr, ms, last_op, play_bits;
 } iq = {.ms = 100, .play_bits = 16383u | (1u << 15)};
 
@@ -750,8 +750,13 @@ static uint32_t iq_fill(unsigned amp, unsigned mode)
 {
     volatile uint32_t *bank2 = (volatile uint32_t *)IQ_BANK2;
     int64_t zr = (int64_t)amp << 20, zi = 0; /* Q20 */
+    int64_t ur = (int64_t)(amp / 2) << 20, ui = 0, vr = (int64_t)(amp / 2) << 20, vi = 0; /* IQ_MODE_TWO */
     for (unsigned n = 0; n < IQ_WORDS; n++) {
         int32_t i = (int32_t)((zr + (1 << 19)) >> 20), q = (int32_t)((zi + (1 << 19)) >> 20);
+        if (mode == IQ_MODE_TWO) {
+            i = (int32_t)((ur + vr + (1 << 19)) >> 20);
+            q = (int32_t)((ui + vi + (1 << 19)) >> 20);
+        }
         switch (mode) {
         case IQ_MODE_REAL:
             q = 0;
@@ -769,7 +774,12 @@ static uint32_t iq_fill(unsigned amp, unsigned mode)
         default:
             break;
         }
-        if (mode == IQ_MODE_ROTATOR || mode == IQ_MODE_REAL) {
+        if (mode == IQ_MODE_TWO) {
+            int64_t nu = (ur * iq.rot_cos - ui * iq.rot_sin) >> 30, nv = (ui * iq.rot_cos + ur * iq.rot_sin) >> 30;
+            int64_t mu = (vr * iq.rot2_cos - vi * iq.rot2_sin) >> 30, mv = (vi * iq.rot2_cos + vr * iq.rot2_sin) >> 30;
+            ur = nu; ui = nv; vr = mu; vi = mv;
+        }
+        if (mode == IQ_MODE_ROTATOR || mode == IQ_MODE_REAL || mode == IQ_MODE_TWO) {
             int64_t q2 = (((int64_t)q * (65536 + iq.pre_g)) >> 16) + (((int64_t)i * iq.pre_p) >> 16);
             q = q2 > 511 ? 511 : q2 < -512 ? -512 : (int32_t)q2;
         }
@@ -858,6 +868,12 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
         *value = (uint32_t)sum;
         return CTL_OK;
     }
+    case IQ_OP_ROT2_COS:
+        iq.rot2_cos = (int32_t)arg;
+        return CTL_OK;
+    case IQ_OP_ROT2_SIN:
+        iq.rot2_sin = (int32_t)arg;
+        return CTL_OK;
     case IQ_OP_PRE_G:
         iq.pre_g = (int32_t)arg;
         return CTL_OK;
@@ -885,7 +901,7 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
         iq.rot_sin = (int32_t)arg;
         return CTL_OK;
     case IQ_OP_FILL:
-        if ((arg & 0x3FF) > 511 || ((arg >> 16) & 15) > IQ_MODE_RAW)
+        if ((arg & 0x3FF) > 511 || ((arg >> 16) & 15) > IQ_MODE_TWO)
             return CTL_BAD_ARGUMENT;
         *value = iq_fill(arg & 0x3FF, (arg >> 16) & 15);
         return CTL_OK;

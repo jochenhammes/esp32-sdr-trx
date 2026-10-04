@@ -192,3 +192,40 @@ A constant correction already beats the original report (44 to 54 dB); the resid
 are not universal constants.
 
 Remaining for Phase B: level against amplitude and gain code (and what limits the output power), IM3 with two tones, the seam between buffers, phase noise.
+
+## Phase B, step 3 to 6: level, gain control, intermodulation, seam, phase noise (2026-10-04)
+
+All with the wide TX filter (block 0x67 registers 12/13 = 0), software I/Q correction g = +0.010, p = -0.055, LO 2350 MHz, Pluto at about 50 cm, 30.72 Msps.
+
+**Level against sample amplitude (complex tone 5 MHz, 80 Msps).**
+
+| Amplitude (of 511) | 25 | 50 | 100 | 150 | 200 | 300 | 400 | 500 |
+|---|---|---|---|---|---|---|---|---|
+| Line over the noise (dB) | 49.9 | 55.6 | 61.4 | 64.6 | 66.8 | 62.2 | 62.2 | 62.1 |
+| Compression against linear | 0 | -0.3 | -0.6 | -0.9 | -1.2 | -9.3 | -11.8 | -13.8 |
+
+The output is linear up to a peak amplitude of about 200 (-1.2 dB) and clips hard above 250 (line drops, power goes into harmonics). Use at most about 40 % of the 10-bit range.
+
+**What sets the output power.** The gain code `0x60006040[17:10]` has **no effect** on the engine path (identical level for codes 0..200; with the tone generator disabled it only scales the generator).
+The analog TX gain is in PBUS (5,1) and (5,3): from the keyed default (0x77 = 119) the line moves with the register: 127: +66.5 dB, 96: +43.2 dB, 64: +40.4 dB, 48: +38.4 dB, 32: +35.9 dB
+(coarse: about -23 dB for the first step from 127 to 96, then 2 to 3 dB per further step). (5,1) and (5,3) alone each give the same change. PBUS (4,2) behaves irregularly (127: +56.5, 96/64/32: +66.3 dB, 48: +12.9 dB), leave it.
+
+**Intermodulation (two complex tones 4 and 6 MHz, equal amplitude).**
+
+| Total amplitude A (each A/2) | 40 | 80 | 120 | 160 | 200 | 260 |
+|---|---|---|---|---|---|---|
+| Wanted tones over the noise (dB) | 47.4 | 53.3 | 56.6 | 58.9 | 60.6 | 62.3 |
+| IM3 below the tones (dBc, noise-limited) | >42 | >44 | >48 | >48 | >49 | **26** |
+
+Up to a peak amplitude of 200 IM3 is better than 48 dBc and at the noise floor of the measurement; at 260 the stage clips and IM3 is 26 dBc. (The original report: 10 to 13 dBc at the PHY's default tone gain with amplitude 400.)
+
+**Seam between buffers (re-trigger from the MCU, poll-done, 4.88 kHz repetition).** With whole-cycle buffers the first sidebands at +-4.88 kHz are at -6 and -12 dBc (the 337 ns pause
+shifts the phase of the tone at every buffer). Counting the pause as an extra **G = 27.0 samples of the 80 MHz clock** in the phase advance of the tone (`Esp.fill_gap`: advance per sample `2 pi k / (16384 + G)`,
+buffer start phase always 0) makes it phase-continuous: first sidebands **-48/-45 dBc**, second **-54 dBc**, for tones of 1.5, 3, -7, 12 MHz (-41 to -55 dBc), reproducible in 3 runs; the null is sharp (+-0.25 samples cost 10 dB),
+so the pause is stable to a fraction of a sample. G depends on the engine loop of this firmware (`iq_play`), not on the tone.
+
+**Close-in noise around the line (single sideband, Pluto + ESP together, resolution 469 Hz).** About -80 dBc/Hz at 2 kHz, -90 to -93 dBc/Hz from 20 to 300 kHz, -100 dBc/Hz at 1 MHz and beyond;
+the lines at multiples of 4.88 kHz are the seam sidebands (before the fix). This is an upper bound for the ESP's PLL; the original report's 0.11 rad rms within 1 us and 0.28 rad within 179 us are not contradicted.
+
+Still open: the maximum useful output power and its safe range for the amateur band (spectral purity out of band, harmonics: the 3rd harmonic was 31 dB below the line at amplitude 450, before the amplitude limit was known),
+the full buffer length of 16384 words only (204.8 us): longer waveforms need the re-trigger with a different buffer, which the seam fix does not cover. Next: the product design (PLAN-IQ-TX.md, Phase C).

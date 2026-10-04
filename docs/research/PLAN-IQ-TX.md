@@ -17,7 +17,7 @@ Known facts to build on (all *reported* until reproduced):
 Why this changes the current code: `firmware/protocol/transmit.h` uses capture banks 0..2 as the ring (`TX_RING_BYTES`), which collides with bank 2 as the playback buffer; the keyed state comes from
 `start_tx_tone_step(1, 0, g, 0, 0, 0)` in `radio_tx_run()`, which the report says writes I = Q = 0 with the enable bit.
 
-**Phase A status (2026-10-04): attempted, not reproduced; see [IQ-TX-PHASE-A.md](IQ-TX-PHASE-A.md). The gate has not been passed.**
+**Phase A status (2026-10-04): reproduced on two receivers (PlutoSDR, HackRF), see [IQ-TX-PHASE-A.md](IQ-TX-PHASE-A.md): the engine radiates once bit 18 of `0x60006040` is cleared after keying. The gate is passed. Phase B steps 1 to 6 are measured in the same file (TX filter registers, I/Q correction, level control, IM3, seam, phase noise).**
 
 ## Phase A: reproduce (smallest possible test, needs the board and a PlutoSDR or HackRF)
 

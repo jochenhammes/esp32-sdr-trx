@@ -27,6 +27,8 @@ from espdr import board, nb, txlink  # noqa: E402
 IQ_OP_BEGIN, IQ_OP_KEY, IQ_OP_GAIN, IQ_OP_ROT_COS, IQ_OP_ROT_SIN, IQ_OP_FILL, IQ_OP_MS, IQ_OP_PLAY, IQ_OP_END = 50, 51, 52, 53, 54, 55, 56, 57, 58
 IQ_OP_ADDR, IQ_OP_POKE, IQ_OP_PEEK = 59, 60, 61
 IQ_OP_KEY2, IQ_OP_PBUS_RD, IQ_OP_PBUS_WR, IQ_OP_KEY_RAW, IQ_OP_PWR, IQ_OP_ANA_RD, IQ_OP_ANA_WR, IQ_OP_PRE_G, IQ_OP_PRE_P = 62, 63, 64, 65, 66, 67, 68, 69, 70
+IQ_OP_ROT2_COS, IQ_OP_ROT2_SIN = 71, 72
+MODE_TWO = 5
 MODE_ROTATOR, MODE_REAL, MODE_CONST, MODE_ZERO = 0, 1, 2, 3
 WORDS = 16384
 IMAGE = ROOT / "firmware" / "build-iq" / "iq-source.bin"
@@ -190,6 +192,25 @@ class Esp:
 
     def end(self):
         self.c(IQ_OP_END)
+
+    def fill_gap(self, tone_hz, amp, gap_samples, rate_msps=80, mode=MODE_ROTATOR):
+        """A tone whose phase continues across the pause between two triggers of the engine: the pause counts as gap_samples extra samples of the DAC clock.
+        Buffer start phase is always 0, so the phase advance per sample is 2*pi*k/(16384+G) with an integer k."""
+        n = WORDS + float(gap_samples)
+        k = round(tone_hz * n / (rate_msps * 1e6)); ph = 2 * math.pi * k / n
+        self.c(IQ_OP_ROT_COS, round(math.cos(ph) * (1 << 30))); self.c(IQ_OP_ROT_SIN, round(math.sin(ph) * (1 << 30)))
+        self.c(IQ_OP_FILL, amp | (mode << 16))
+        return k * rate_msps * 1e6 / n
+
+    def fill_two(self, f1, f2, amp, rate_msps=80):
+        """Two complex tones of amplitude amp/2 each (a two-tone test for intermodulation)."""
+        out = []
+        for f, (cop, sop) in ((f1, (IQ_OP_ROT_COS, IQ_OP_ROT_SIN)), (f2, (IQ_OP_ROT2_COS, IQ_OP_ROT2_SIN))):
+            k = round(f / (rate_msps * 1e6 / WORDS)); ph = 2 * math.pi * k / WORDS
+            self.c(cop, round(math.cos(ph) * (1 << 30))); self.c(sop, round(math.sin(ph) * (1 << 30)))
+            out.append(k * rate_msps * 1e6 / WORDS)
+        self.c(IQ_OP_FILL, amp | (MODE_TWO << 16))
+        return out
 
     TX_FILTER_BLOCK, TX_FILTER_REGS = 0x67, (12, 13)   # analog block of the baseband filter; regs 12 and 13 are the TX filter capacitor codes (default 0x23 = 20 MHz channel)
 

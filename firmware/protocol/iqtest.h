@@ -27,6 +27,8 @@
 #define IQ_OP_ANA_WR 68  /* arg: host << 24 | value << 16 | block << 8 | register */
 #define IQ_OP_PRE_G 69   /* arg: signed Q16 gain error of Q for IQ_OP_FILL: Q' = (1 + g) * Q + p * I */
 #define IQ_OP_PRE_P 70   /* arg: signed Q16 I-to-Q leakage p (see IQ_OP_PRE_G) */
+#define IQ_OP_ROT2_COS 71 /* second rotator for IQ_MODE_TWO, as IQ_OP_ROT_COS */
+#define IQ_OP_ROT2_SIN 72
 #define IQ_OP_PBUS_RD 63 /* arg: block << 4 | index; value: the analog bus register (9 bits) */
 #define IQ_OP_PBUS_WR 64 /* arg: value << 8 | block << 4 | index */
 #define IQ_OP_KEY2 62  /* like IQ_OP_KEY but with the PHY's phy_txtone_start(mhz, 0, power): arg bits 15:0 mhz, 23:16 power, 31:24 bank grant */
@@ -35,6 +37,7 @@
 #define IQ_MODE_REAL 1    /* I = Re(A * w^n), Q = 0 */
 #define IQ_MODE_CONST 2   /* I = A, Q = 0 */
 #define IQ_MODE_ZERO 3    /* all words 0 */
+#define IQ_MODE_TWO 5     /* I + jQ = A/2 * (w1^n + w2^n): two complex tones (w1 from the ROT ops, w2 from the ROT2 ops) */
 #define IQ_MODE_RAW 4     /* every word = the value given with IQ_OP_ROT_COS (raw 32-bit pattern) */
 
 #define IQ_BANK2 0x3FCD0000u
