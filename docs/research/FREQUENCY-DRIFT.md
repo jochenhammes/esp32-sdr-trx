@@ -53,3 +53,17 @@ while it warms up), so a decoder without automatic tuning loses lock, and the RT
   from one measurement series like this one; (3) the host applies the offset. Expected: the bursts' 430 Hz spread becomes about 35 Hz, a cold start still about 200 Hz.
 * Not done: a model that also explains the cold start, a series with the board at other ambient temperatures, a series that reads the sensor inside a transmission,
   and a check of the model on a second board.
+
+## Follow-up: the correction in espdr-tx, A/B tests (2026-10-04, afternoon)
+
+`espdr-tx --thermal sensor` (branch `feature/thermal-drift`, `src/espdr/thermal.py`, firmware op `TX_OP_TEMP`) applies the model above. The A/B series (`scripts/drift/ab_series.py`,
+data `drift-ab-series-1.json`, `drift-validation-1.json`, `drift-validation-2.json`) sent an SSB test tone (1 kHz, USB) and RTTY (`RY` repeated), 15, 45 and 120 s, without (A) and with (B) the
+correction, with the chip between 44 and 57 C at the start. The start temperature could not be held equal: the chip only cools to 46 to 47 C within a minute, and to 42 C in about ten.
+
+Findings: the first model (the one fitted to the first series, 6 parameters) cancelled about 60 % of the drift of 45 s transmissions and 40 % of 120 s ones (45 s: +729/+862 -> +188/+252 Hz).
+Every run showed an additional rise of about +20 Hz/s in the first 10 s that does not follow the sensor, whatever the start temperature from 46 C up (the cold start of the first series fell by 17 Hz/s: the
+sensor is not the crystal's temperature). Refitting with all runs (model v2: t0 47.9 C, k 22.3 Hz/C^2, chip to 58 C with 130 s, no crystal lag, plus 1096 Hz * (1 - exp(-t/56 s))) took
+the residual per transmission to 18..66 Hz rms, and on five new transmissions (v2 built in) the change over the transmission to +165..+172 Hz (SSB 150 s from 47 C: +2077 Hz without, +162 Hz with).
+Model v3 (all 37 transmissions; k 19.5, t0 47.1 C, 137 s, 1118 Hz, 67 s) was confirmed on three more: SSB 120 s from 51 C +191 Hz (+1812 Hz uncorrected at 50 C), RTTY 120 s from 47 C +202 Hz,
+SSB 30 s from 57 C -40 Hz. The maximum rate falls from 20..38 Hz/s to 4..11 Hz/s. Not done: transmissions longer than 150 s (the model flattens at about 3400 Hz of correction),
+equal start temperatures for the pairs, a second board, the Pluto's own drift (it is in all numbers), a reading of the sensor inside the transmission.
