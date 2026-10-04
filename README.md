@@ -64,7 +64,16 @@ flash unless you ask (`espdr-rx --flash`). `-h` explains every option and shows 
 | [espdr-rx](docs/espdr-rx.md), [espdr-tx](docs/espdr-tx.md) | command line reference (also `-h`) |
 | [How it works](docs/internals.md) | the time budget, the decimator, the USB stream, the transmit protocol and polar modulation |
 | [Research notes](docs/research/TX-RESEARCH.md) | how the transmitter was found out, with every measurement |
+| [Research branch `research/iq-tx`](https://github.com/jochenhammes/esp32-sdr-trx/tree/research/iq-tx) | the raw I/Q transmit experiments (SRAM playback engine), with all test results and the research firmware; not part of the releases |
 | [Releasing](docs/releasing.md) | for maintainers |
+
+## Research branch: raw I/Q transmit
+
+The branch [`research/iq-tx`](https://github.com/jochenhammes/esp32-sdr-trx/tree/research/iq-tx) holds the experiments with the chip's I/Q playback engine (samples from SRAM to the transmit DAC at up to 80 Msps, found by h0m3us3r).
+**All test results are kept there**, not in this branch: the reproduction of the engine on two receivers, the transmit filter and image correction, level, intermodulation, the seam
+between buffers, phase noise, the streaming experiments that failed, and the resulting design. Start with
+[`docs/research/README.md`](https://github.com/jochenhammes/esp32-sdr-trx/tree/research/iq-tx/docs/research/README.md) on that branch. It also contains a research-only firmware (`make -C firmware TX=1 IQTEST=1`) and a measurement script;
+neither is part of the releases, and the transmitter in this branch does not use the engine.
 
 ## Honest limits
 
