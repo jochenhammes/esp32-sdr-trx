@@ -104,6 +104,19 @@ between buffers, phase noise, the streaming experiments that failed, and the res
 [`docs/research/README.md`](https://github.com/jochenhammes/esp32-sdr-trx/tree/research/iq-tx/docs/research/README.md) on that branch. It also contains a research-only firmware (`make -C firmware TX=1 IQTEST=1`) and a measurement script;
 neither is part of the releases, and the transmitter in this branch does not use the engine.
 
+## Research: LoRa at 13 cm
+
+Question: can this chip send LoRa (chirp spread spectrum) inside the 13 cm amateur band, where only our own receiver has to understand it? Everything is in
+[`docs/research/LORA-IQ.md`](docs/research/LORA-IQ.md) (log) and [`PLAN-LORA-IQ.md`](docs/research/PLAN-LORA-IQ.md) (plan); the receiver in all tests is a PlutoSDR.
+
+* **Own LoRa PHY** (`src/espdr/lora_phy.py`, numpy): sender and receiver for SF5 to SF12 and any bandwidth. The LoRa library of pluto-tx (gr-lora_sdr) decodes nothing at SF5/SF6, so this replaces it; at SF7 it works with gr-lora_sdr in both directions.
+* **Scheme S, a whole frame in one buffer of the playback engine** (up to about 400 us, e.g. 12 bytes at SF5 and 4 MHz bandwidth, or a MeshCore raw packet at 8 MHz): decodes every frame on the air, within 1 to 1.5 dB of the ideal receiver. Not a standard LoRa bandwidth, so only our receiver reads it.
+* **Scheme W, a frame written symbol by symbol** (the chip copies one window of the chirp into the engine's buffer per symbol, in a locked symbol clock; research firmware only): works at the real SX1280 bandwidths 0.8125 and 1.625 MHz and gets better with the spreading factor (SF7, 3.2 ms: every frame decodes); it costs about 5 to 6 dB of sensitivity.
+* **Scheme P, narrow LoRa through the ordinary polar transmitter** (`espdr-tx -m lora`, bandwidth up to 80 kHz): SF5 to SF10 at 62.5 kHz decode, with a receiver that follows the board's carrier drift. The temperature correction (`--thermal`) is made for long transmissions and does not suit these short bursts.
+* **Not done:** the ESP32's own receiver on narrow LoRa (it needs a second transmitter at 13 cm), a real LoRa chip as the receiver (the only check against the standard), and the other boards.
+
+Tools: `scripts/lora_iq/` (`run.py` for the engine schemes, `polar.py` for scheme P, `selftest.py`, `model.py` for the offline model), research firmware ops in `firmware/protocol/iqtest.h`. Transmitting needs a transmit permission.
+
 ## Honest limits
 
 * Tested on **one** board (a generic ESP32-S3-WROOM-1 dev board with two USB-C ports), one Linux host, a PlutoSDR and a HackRF as test equipment.
