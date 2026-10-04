@@ -29,7 +29,7 @@ Symbol time `Ts = 2^SF / BW`; words per symbol = `Ts x Fs`; one buffer holds 163
 | LoRa 2.4 GHz SF7, BW 812.5 / 1625 kHz | 157.5 / 78.8 us | 6302 / 3151 | 0.38 / 0.19 | fits |
 | LoRa 2.4 GHz SF9, BW 1625 kHz | 315 us | 12603 | 0.77 | fits (40 Msps only) |
 | Meshtastic ShortTurbo SF7, BW 500 kHz | 256 us | 10240 (os 80) | 0.62 | fits, integer oversampling: **first hardware target** |
-| Meshtastic ShortFast SF7, BW 250 kHz | 512 us | 20480 (os 160) | 1.25 | needs two buffers per symbol (gate in the middle of a symbol), second step |
+| Meshtastic ShortFast SF7, BW 250 kHz | 512 us | 20480 (os 160) | 1.25 | needs two buffers per symbol (**gate in the middle of a symbol), second step |
 | MeshCore EU/UK Narrow SF8, BW 62.5 kHz | 4096 us | 163840 | 10 | does not fit: the base chirp ring alone is 640 KB (more than the free SRAM) and 10 buffers per symbol with a gap each |
 | Meshtastic LongFast SF11, BW 250 kHz | 8192 us | 327680 | 20 | does not fit |
 
@@ -59,7 +59,7 @@ New scripts live in this repository (`scripts/lora_iq/`), importing from `pluto-
 
 Reference bytes are compared at three levels: symbol values (RX demod output), payload bytes (CRC ok), parsed MeshCore packet. A numpy dechirp/FFT receiver is added as a second, independent check (it runs without GNU Radio, also in cloud sessions).
 
-## 6. Phases with gates
+## 6. Phases with **gates
 
 **L0, offline model (no hardware, local machine; the numpy part also runs anywhere).** Take the reference IQ of a MeshCore advert at the chosen BW, resample to 40 or 80 Msps, apply the engine model, decode, measure packet error rate against SNR:
 10-bit quantisation at peak <= 200, the truncated tail (play fraction f = 0.82 / 0.695), the 337 ns pause, image rejection 33/62 dB, LO feedthrough, crystal offset +40 kHz, the polar staircase for baseline P (update 40 kHz, 457 Hz, +-70 steps, error feedback).
@@ -69,8 +69,8 @@ Reference bytes are compared at three levels: symbol values (RX demod output), p
 Pluto + dechirp: peak bin position stable, symbol clock, SNR; `frame_sync` of gr-lora_sdr detects the preamble. Compare the line quality with the ideal chirp from L0.
 *Gate:* detected preamble with a stable peak; otherwise fix the chirp rendering (phase wrap, oversampling) before going on.
 
-**L2, symbols with rewrite, scheme W (hardware, new research op `IQ_OP_LORA`).** The host sends (parameters: SF, BW code, oversampling, preamble length, sync symbols, symbol values). The firmware renders the base chirp ring once (10240 words at BW 500 kHz, SF7, in banks 0/1; banks 2 is the playback bank, bank 3 stays masked),
-then per symbol: wait for done, copy the window (up to two segments) into bank 2, trigger, with the symbol period locked to `Ts` by the cycle counter (play count = `Ts x Fs / (1 + 5.5 ns x Fs)`, i.e. the tail is dropped). Identical symbols (preamble) skip the copy. SFD down-chirps: second ring, conjugate. Pause compensation as in design A.
+**L2, symbols with rewrite, scheme W (hardware, new research op `IQ_OP_LORA`).** The host sends the parameters (SF, BW code, oversampling, preamble length, sync symbols) and the symbol values. The firmware renders the base chirp ring once (10240 words at BW 500 kHz, SF7, in banks 0/1; bank 2 is the playback bank, bank 3 stays masked),
+then per symbol: wait for done, copy the window (up to two segments) into bank 2, trigger, with the symbol period locked to `Ts` by the cycle counter (play count = `Ts x Fs / (1 + 5.5 ns x Fs)`, i.e. the tail is dropped). Identical symbols (preamble) skip the copy. SFD down-chirps: second ring, conju**gate. Pause compensation as in design A.
 Receiver: Pluto, `LoraRxDecoder`. Start with a frame of 16 preamble + sync + SFD + header + a short payload (as few bytes as possible), then a MeshCore advert (about 100 bytes, roughly 100 to 200 symbols at SF7).
 *Metrics:* packet error rate against attenuation (cable + attenuator or distance), against the play fraction f (vary the count deliberately, to compare with the L0 prediction), measured symbol timing jitter, spectrum and out-of-band lines.
 *Gate:* CRC-ok packets with the right bytes, reproducible; loss against L0 prediction within a few dB.
