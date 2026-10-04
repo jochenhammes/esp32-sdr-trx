@@ -11,9 +11,10 @@ usage: espdr-tx [-h] [-V] [-f MHZ] [-m {fm,usb,lsb,rtty}] [-i SOURCE] [--test-to
                 [--carrier FRACTION] [--ssb-delay UPDATES] [--text TEXT] [--text-file FILE]
                 [--mark-hz HZ] [--shift-hz HZ] [--baud-rate BAUD] [--reverse] [--edge BITS]
                 [--repeat-count N] [--repeat-interval SECONDS] [--duration SECONDS]
-                [--update-rate HZ] [--drift HZ] [--dry-run] [--accept-licence] [-q] [-v]
-                [--port DEVICE] [--bridge-port DEVICE] [--no-load] [--reload] [--native]
-                [--image FILE] [--restore] [--selftest]
+                [--update-rate HZ] [--thermal {off,sensor,nominal}] [--thermal-model FILE]
+                [--drift HZ] [--dry-run] [--accept-licence] [-q] [-v] [--port DEVICE]
+                [--bridge-port DEVICE] [--no-load] [--reload] [--native] [--image FILE]
+                [--restore] [--selftest]
 
 espdr-tx: transmit FM or SSB voice, or RTTY, from an ESP32-S3 board on the 13 cm band.
 
@@ -80,6 +81,13 @@ RTTY (-m rtty):
 session:
   --duration SECONDS    stop after this many seconds (default: until the source ends)
   --update-rate HZ      records per second sent to the chip, 8000 .. 40000 (default 40000)
+  --thermal {off,sensor,nominal}
+                        cancel the carrier's thermal drift with a model: 'sensor' reads the chip's
+                        temperature first, 'nominal' assumes the idle temperature of the chip (no
+                        sensor reading); the model is that of the board it was measured on
+                        (default off)
+  --thermal-model FILE  JSON file with the thermal model's numbers of this board (see
+                        espdr.thermal.DEFAULT)
   --drift HZ            thermal frequency drift to cancel at switch-on, measured on one board
                         (default 210; 0 = off)
   --dry-run             show the settings and send nothing (the board is not touched)

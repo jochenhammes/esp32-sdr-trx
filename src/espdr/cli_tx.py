@@ -107,6 +107,10 @@ def build_parser():
     run = p.add_argument_group("session")
     run.add_argument("--duration", type=float, metavar="SECONDS", help="stop after this many seconds (default: until the source ends)")
     run.add_argument("--update-rate", type=int, default=40000, metavar="HZ", help="records per second sent to the chip, 8000 .. 40000 (default 40000)")
+    run.add_argument("--thermal", choices=("off", "sensor", "nominal"), default="off",
+                     help="cancel the carrier's thermal drift with a model: 'sensor' reads the chip's temperature first, 'nominal' assumes the idle temperature "
+                          "of the chip (no sensor reading); the model is that of the board it was measured on (default off)")
+    run.add_argument("--thermal-model", metavar="FILE", help="JSON file with the thermal model's numbers of this board (see espdr.thermal.DEFAULT)")
     run.add_argument("--drift", type=int, default=210, metavar="HZ",
                      help="thermal frequency drift to cancel at switch-on, measured on one board (default 210; 0 = off)")
     run.add_argument("--dry-run", action="store_true", help="show the settings and send nothing (the board is not touched)")
@@ -211,6 +215,20 @@ def _rtty_plan(args):
 def _transmit(args, out, mod, session, lo_hz, stop, interrupted, blocks, live, stream):
     """One transmission: configure and begin the chip, feed it, report. Returns (the chip's summary, ended by the user)."""
     import numpy as np
+    correct = None
+    if args.thermal != "off":
+        from . import thermal
+        params = thermal.load_params(args.thermal_model)
+        start_c = params["idle"]
+        if args.thermal == "sensor":
+            try:
+                start_c = session.chip_temperature()
+            except (nb.CommandError, OSError) as e:
+                print(f"warning: the chip's temperature could not be read ({e}); assuming {start_c:g} C", file=out)
+        correct = thermal.Thermal(start_c, args.update_rate, args.freq * 1e6, params)
+        peak = max(abs(correct.correction_hz(int(args.update_rate * 150))))
+        print(f"thermal drift correction: chip {start_c:.1f} C {'(read)' if args.thermal == 'sensor' else '(assumed)'}, "
+              f"up to {peak:.0f} Hz within 150 s", file=out)
     session.configure(lo_hz, args.update_rate, drift_hz=args.drift, limit_s=3600)
     session.begin(expect_word=txlink.lo_word(lo_hz))
 
@@ -223,10 +241,12 @@ def _transmit(args, out, mod, session, lo_hz, stop, interrupted, blocks, live, s
             for b in blocks:
                 if stream is None:
                     level[0] = 20 * np.log10(max(float(np.sqrt(np.mean(np.square(b)))), 1e-6))
-                q.put(mod.process(b))
+                r = mod.process(b)
+                q.put(correct.apply(r) if correct else r)
             if stream is None:
                 for _ in range(10):                          # flush the filters with silence
-                    q.put(mod.process(np.zeros(160)))
+                    r = mod.process(np.zeros(160))
+                    q.put(correct.apply(r) if correct else r)
         except Exception as e:                                   # noqa: BLE001 - reported by the main thread
             err.append(e)
         finally:

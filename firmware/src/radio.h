@@ -33,6 +33,7 @@ uint32_t radio_stat(unsigned index);
  */
 unsigned radio_tx_set(unsigned op, uint32_t arg);
 unsigned radio_tx_begin(uint32_t *word);
+uint32_t radio_tx_temp(unsigned range); /* TX_OP_TEMP */
 uint32_t radio_tx_run(void);
 #endif
 
