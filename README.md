@@ -55,6 +55,31 @@ Both tools load the right firmware into the board's RAM by themselves and switch
 flash unless you ask (`espdr-rx --flash`). `-h` explains every option and shows examples; the full reference is in
 [docs/espdr-rx.md](docs/espdr-rx.md) and [docs/espdr-tx.md](docs/espdr-tx.md).
 
+## Temperature correction for the transmitter (`--thermal`)
+
+**Why.** The transmitter warms up while it sends: the chip's temperature sensor climbs from about 42 C to 57 C within 150 s. The board's 40 MHz crystal changes its frequency with that, and
+the carrier at 2.35 GHz moves with it. Measured against a PlutoSDR it ran away by **+230 Hz in 15 s, +800 Hz in 45 s and +2000 Hz in 120 to 150 s**, by up to 38 Hz per second. That is too much for
+**RTTY** (a 170 Hz shift tolerates about 85 Hz, and a receiver's automatic tuning has to chase the signal) and for **SSB**, where the voice is only right if you are tuned to the carrier.
+
+**How it works.** The chip has an on-chip temperature sensor, which the firmware reads between transmissions (`TX_OP_TEMP`). The host predicts the frequency error from the temperature at the start and the
+time since the start, with a small model of the crystal (a parabola around its turning point at 47 C, the chip heating towards 58 C, plus a slow rise at the switch-on that the sensor does not
+show), and adds the opposite to the frequency field of every record. It works for FM, SSB and RTTY alike, needs no change on the receiving side, and costs nothing in the chip's 25 microsecond loop.
+The numbers of the model were fitted to 37 transmissions of one board (`scripts/drift/` makes them for another one).
+
+**How to use it.**
+
+```sh
+espdr-tx -f 2350 -m usb  -i speech.wav --ppm 5.4 --thermal sensor      # reads the chip's temperature first
+espdr-tx -f 2350 -m rtty --text "RYRY CQ CQ DE <your call sign> K" --thermal sensor
+espdr-tx -f 2350 -m rtty --text-file message.txt --thermal nominal     # no sensor reading: assumes the idle temperature
+espdr-tx -f 2350 -m usb  -i speech.wav --thermal sensor --thermal-model my-board.json
+```
+
+`--thermal` is off by default. With `sensor` (needs the current transmitter firmware, which the tool loads) the change of the frequency over a transmission fell from **+2077 Hz to +162 Hz (SSB, 150 s)**, from +1800 to +190 Hz
+(SSB, 120 s) and to about +170 to +200 Hz for RTTY of 60 to 120 s; the fastest rate fell from 20 to 38 Hz/s to 4 to 11 Hz/s. What remains is a rise of 50 to 100 Hz in the first 10 s. Set `--ppm` again when you
+switch it on (the carrier then sits 0.3 to 0.5 ppm lower than with the setting from a cold board), and measure your own board before you rely on the model: all numbers are from one board, one
+PlutoSDR, and transmissions up to 150 s. Details and the measurements: [transmitter guide, "Thermal drift"](docs/transmitter.md#thermal-drift---thermal).
+
 ## Documentation
 
 | | |
