@@ -88,40 +88,42 @@ rounded over 0.2 bit (`--edge`; `0` makes abrupt steps; the measurements below s
 
 ## Thermal drift (`--thermal`)
 
-The board warms up while it transmits: the chip's own temperature sensor goes from 42 C (idle) to 57 C within 150 s, and the frequency of the crystal changes with it
-by more than a RTTY decoder can follow (half the shift, 85 Hz) and more than an SSB receiver tolerates. Measured with a PlutoSDR at 2350 MHz, the carrier moved
-**+230 Hz in 15 s, +730 to +860 Hz in 45 s, +1800 to +2050 Hz in 120 s and +2080 Hz in 150 s** when the transmission started at 47 to 50 C; by up to 20 to 38 Hz per second.
+The board warms up while it transmits: the chip's own temperature sensor goes from room temperature or its idle 42 C to 57 C within a few minutes, and the frequency of the crystal and of the
+chip's PLL changes with it by more than a RTTY decoder can follow (half the shift, 85 Hz) and more than an SSB receiver tolerates. Without a correction the carrier moved, on the first board,
+**+230 Hz in 15 s, +730 to +860 Hz in 45 s, +1800 to +2050 Hz in 120 s and +2080 Hz in 150 s** (starting at 47 to 50 C), and **8 kHz** over 150 s from a cold start at 20 C.
 
-```sh
-espdr-tx -f 2350 -m usb -i speech.wav --ppm 5.4 --thermal sensor
-espdr-tx -f 2350 -m rtty --text "RYRY CQ CQ DE <your call sign> K" --thermal sensor
-```
+`--thermal sensor` reads the chip's temperature before the transmission (`TX_OP_TEMP`), predicts the frequency error from that and the time since the start with a model, and adds the opposite to the frequency
+field of every record. It works for all modes. The model (`espdr.thermal`): a crystal curve around a turning point `t0` (`k` Hz per degree squared, `k3` per degree cubed), the chip heating towards 58 C
+with a time constant of 137 s (confirmed by the sensor on both boards: 51.9 C predicted, 51.8 C read after 240 s from 23 C), and a faster rise at the switch-on that the sensor does not show (`early_hz`, `early_tau`).
 
-`--thermal sensor` reads the chip's temperature before the transmission (`TX_OP_TEMP`), predicts the frequency error from that and the time since the start with a model of the
-crystal (a parabola around its turning point at 47 C, the chip heating towards 58 C with a time constant of 137 s, and a slower rise of about 1100 Hz that does not follow
-the sensor) and adds the opposite to the frequency field of every record. It works for all modes. `--thermal nominal` does the same without reading the sensor and assumes
-the idle temperature of 42 C (for a transmission after the board has rested for a few minutes; an older firmware image without the sensor falls back to it with a warning).
-`--thermal-model FILE` takes the numbers of another board (a JSON file with the names of `espdr.thermal.DEFAULT`; `scripts/drift/` makes one, see below).
+**The numbers belong to the board.** Two boards of the same make were measured, and their crystals differ:
 
-| Transmission (start temperature) | change of the frequency over the transmission without / with `--thermal sensor` |
-|---|---|
-| SSB, 15 s (47 C) | +229 / +197 Hz |
-| SSB, 45 s (46.6 / 48.3 C) | +729 / +188 Hz |
-| RTTY, 45 s (49 / 50 C) | +862 / +252 Hz |
-| SSB, 120 s (50 C) | +1812 / +1041 Hz (first model) |
-| RTTY, 120 s (53 C) | +2048 / +1317 Hz (first model) |
-| SSB, 150 s (47 C) | +2077 / **+162 Hz** |
-| SSB, 120 s (51 C) | / **+191 Hz** |
-| RTTY, 120 s (47 C) / 90 s (44 C) / 60 s (52 C) | / **+202 Hz** / **+172 Hz** / **+165 Hz** |
-| SSB, 30 s (57 C) | / **-40 Hz** |
+| | board 1 | board 2 |
+|---|---|---|
+| turning point `t0` | 47.1 C | 41 C |
+| curvature `k` | 19.5 Hz/C^2 | 21.2 Hz/C^2 |
+| fast rise at the start (`early_hz`, `early_tau`) | 1100 Hz, 67 s | 3100 Hz, 5 s |
+| crystal error (`--ppm`) | +5.4 ppm | +5.4 ppm |
+| uncorrected: change over 45 s, 120 s (start 47 to 50 C) | +730 to +860 Hz, +1800 to +2050 Hz | +2700 to +2800 Hz, +4400 Hz |
+| fastest rate, uncorrected | 20 to 38 Hz/s | 160 to 200 Hz/s |
 
-The rows in bold are with the model that is built in now or the one before its last refit (the same numbers within a few percent), on transmissions that were not used to fit it.
+With each board's own model the change over the transmission fell to **+27 to +66 Hz at 45 s and 120 s and +396 Hz at the worst (RTTY, 120 s)** on board 1 (SSB 150 s from 47 C: +2077 -> +162 Hz; cold start
+from 20 C, 240 s: -7.9 kHz uncorrected), and to **+107 and +127 Hz at 45 s, -323 Hz at 120 s** on board 2 (uncorrected +2775, +2668, +4393 Hz); the fastest rate fell to 4 to 14 Hz/s on board 1 and 30 Hz/s on board 2.
+Board 1's model on board 2 helped little (45 s: +2668 -> +2041 Hz). From a cold start (20 to 23 C) the correction cut the excursion on board 2 from 4.6 kHz to 1.2 kHz; the first 10 s are then off by about 1 kHz
+(the fast rise is smaller after a long rest than after a short pause, and the model has one value). Board 1's figures come from a second session with the model that had been fitted to the first one; board 2's from a validation run after its model was fitted to an earlier run on the same day.
 
-The first seconds are the weak point: after the correction a rise of 50 to 100 Hz in the first 10 s remains (5 to 10 Hz/s, from 20 to 30 Hz/s), and over the whole transmission the frequency stays within about 250 Hz of its value at the start. The tables are for one board
-(the tested one) and one PlutoSDR as referee: the Pluto's own drift is in all of the numbers. The frequency to which the corrected carrier holds depends on the start temperature by
-about +-200 Hz, and sits 0.3 to 0.5 ppm lower than the setting `--ppm 5.4` gave on the cold board: set `--ppm` again with `--thermal` in use. Transmissions longer than 150 s were not measured (the model
-flattens out). The model must be refitted for another board: `scripts/drift/ab_series.py` transmits for about half an hour and records the carrier with a PlutoSDR,
-`scripts/drift/ab_analyse.py` tabulates it, and `scripts/drift/fit_thermal.py OUT.json recording.json[@MODEL_USED.json] ...` fits the numbers for `--thermal-model`.
+`--thermal` has four settings: `off`; `sensor`; `nominal` (no sensor reading: assume the idle temperature); and **`auto`, the default: `sensor` if the board has a model file, `off` otherwise.** The file is
+`thermal-SERIAL.json` in the configuration directory (`~/.config/espdr/`), SERIAL being the serial number of the board's USB-UART bridge (`espdr-tx -v` names the file it looked for; the native port reports the same number
+for every board while the firmware runs), or `thermal.json` for a single board; `--thermal-model FILE` names one explicitly. Without a file nothing is changed in the signal. With several boards attached name the board's
+bridge with `--bridge-port`. A model file is a JSON with the names of `espdr.thermal.DEFAULT`; the numbers of the two boards above are in `scripts/drift/models/`.
+
+**Making a model for your board** takes about 40 minutes and a PlutoSDR (or another receiver that records the carrier): `scripts/drift/ab_series.py` transmits an SSB tone and RTTY at 2350 MHz in several lengths
+without and with the correction and records the carrier, `scripts/drift/ab_analyse.py` tabulates it and `scripts/drift/fit_thermal.py` fits the numbers (with `--per-run-offset`, `--skip` and `--fixed` for
+awkward data). Include a cold start (a board that rested for 20 minutes, a 240 s run) because the curve is steepest there. Set `--ppm` again with the correction on (the carrier then sits 0.3 to 0.5 ppm lower
+than with the setting from a cold board).
+
+**Limits.** The frequency after the start still depends on the history of the board (a restart after a short pause begins 1 kHz lower than after a long rest on board 2); this is not in the model.
+Transmissions longer than 240 s were not measured (the model flattens out). The measurements use one PlutoSDR as the referee, whose own drift is in all the numbers. Two boards are a small sample.
 The research notes (`docs/research/FREQUENCY-DRIFT.md` on the research branch) hold the raw series.
 
 ## Power

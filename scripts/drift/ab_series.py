@@ -115,7 +115,7 @@ def tx(mode, seconds, variant):
     else:
         cmd = base + ["-m", "rtty", "--text", "RY" * max(1, int(round((seconds - 1.2) / 0.33)))]
     if variant == "B":
-        cmd += ["--thermal", "sensor"] + (["--thermal-model", args.thermal_model] if args.thermal_model else [])
+        cmd += ["--thermal", "sensor" if args.thermal_model else "auto"] + (["--thermal-model", args.thermal_model] if args.thermal_model else [])      # auto: the board's own model file
     start_temp = read_temp()
     t = time.monotonic()
     events.append(dict(t=t, kind="start", mode=mode, length=seconds, variant=variant, temp=start_temp, cmd=cmd))
