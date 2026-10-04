@@ -718,12 +718,13 @@ uint32_t radio_tx_run(void)
 #include "iqtest.h"
 
 extern void phy_txtone_start(int mhz, int offset, int power);
+extern int txtone_linear_pwr(void);
 
 static struct {
     bool begun, keyed;
     int32_t rot_cos, rot_sin;
-    uint32_t addr, ms, last_op;
-} iq = {.ms = 100};
+    uint32_t addr, ms, last_op, play_bits;
+} iq = {.ms = 100, .play_bits = 16383u | (1u << 15)};
 
 static void iq_end(void)
 {
@@ -815,7 +816,7 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
             return CTL_BUSY;
         start_tx_tone_step(1, 0, (int)(arg & 0xFF), 0, 0, 0);
         iq.keyed = true;
-        REG(IQ_BANK_SELECT_REG) = (arg >> 8) & 0xFF; /* keying clears it; grant the bank after keying */
+        REG(IQ_BANK_SELECT_REG) = (arg >> 8) & 7u; /* keying clears it; grant the bank after keying (never bank 3) */
         *value = REG(IQ_BANK_SELECT_REG);
         return CTL_OK;
     case IQ_OP_KEY2:
@@ -823,7 +824,7 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
             return CTL_BUSY;
         phy_txtone_start((int)(arg & 0xFFFF), 0, (int)((arg >> 16) & 0xFF));
         iq.keyed = true;
-        REG(IQ_BANK_SELECT_REG) = (arg >> 24) & 0xFF;
+        REG(IQ_BANK_SELECT_REG) = (arg >> 24) & 7u;
         *value = REG(IQ_BANK_SELECT_REG);
         return CTL_OK;
     case IQ_OP_KEY_RAW:
@@ -831,9 +832,28 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
             return CTL_BUSY;
         phy_txtone_start((int)(arg & 0xFFFF), 0, (int)((arg >> 16) & 0xFF));
         iq.keyed = iq.begun = true;
-        REG(IQ_BANK_SELECT_REG) = (arg >> 24) & 0xFF;
+        REG(IQ_BANK_SELECT_REG) = (arg >> 24) & 7u;
         *value = REG(IQ_BANK_SELECT_REG);
         return CTL_OK;
+    case IQ_OP_PWR: {
+        int32_t sum = 0;
+        const uint32_t base = iq.play_bits & 0x0FF8BFFFu;
+        for (unsigned k = 0; k < 64; k++) {
+            if (arg & 1) {
+                REG(IQ_DAC_REG) = base;
+                REG(IQ_DAC_REG) = base | (1u << 31);
+            }
+            sum += (int16_t)txtone_linear_pwr();
+            if (arg & 1) {
+                uint32_t t = cpu_cycles();
+                while (!(REG(IQ_DAC_REG) & (1u << 18)) && cpu_cycles() - t < 2u * 240000u)
+                    ;
+                REG(IQ_DAC_REG) = base;
+            }
+        }
+        *value = (uint32_t)sum;
+        return CTL_OK;
+    }
     case IQ_OP_PBUS_RD:
         *value = rom_pbus_rd((arg >> 4) & 15, arg & 15) & 511;
         return CTL_OK;
@@ -859,6 +879,7 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
         iq.ms = arg;
         return CTL_OK;
     case IQ_OP_PLAY:
+        iq.play_bits = arg;
         *value = iq_play(arg);
         iq.last_op = cpu_cycles();
         return CTL_OK;
@@ -873,6 +894,8 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
     case IQ_OP_POKE:
         if (!iq.addr)
             return CTL_NOT_READY;
+        if (iq.addr == IQ_BANK_SELECT_REG)
+            arg &= 7u; /* bank 3 overlaps the ROM's working data: never grant it */
         REG(iq.addr) = arg;
         return CTL_OK;
     case IQ_OP_PEEK:
