@@ -193,7 +193,15 @@ distorted chirps, and nothing decoded; the first gain settings that worked were 
 **Sensitivity of the ESP32 receiver** (SF7, BW 62.5 kHz, gain 40 dB, 20 frames per step): all frames decode down to a Pluto attenuation of -50 dB (21 of 21 in three runs); at -54 dB the results were 4 of 20 and 22 of 22 in two runs (the edge); at -58 dB and below nothing decodes. The absolute power at the ESP32 was
 not calibrated (the Pluto's own receiver could not see these levels, see below), so this is a relative threshold only.
 
-COMPARISON_PLACEHOLDER
+**The Pluto's receiver on the same transmissions** (recorded at the same time, 2.5 Msps, receiver gain 60 dB, the same numpy receiver; SF7, BW 62.5 kHz, 20 frames per step; the first attempt used the wrong sample rate because the Pluto's TX and RX share it, see `esp_rx.py`):
+
+| Pluto TX attenuation | -50 dB | -54 dB | -58 dB | -62 dB | -66 dB | -70 dB |
+|---|---|---|---|---|---|---|
+| Pluto receiver | 20 / 20 | 20 / 20 | 20 / 20 | 20 / 20 | 20 / 20 | 20 / 20 |
+| ESP32 receiver (gain 40 dB) | 22 / 22 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+(The ESP32 line at -54 dB differs from the earlier runs, 4 of 20 and 22 of 22: this is its edge.) So **the ESP32 receiver is at least 16 to 20 dB less sensitive than the Pluto** for narrow LoRa with these settings (the Pluto still decodes everything at the weakest step I tried); its recordings also show an rms of 8 to 15 counts with no signal
+at all, i.e. it is limited by its own noise and spurs well above the thermal floor. A link ESP32 to ESP32 is therefore possible but short; the Pluto as the receiver is the way to cover distance. (Not tried: the ESP32's gain above 40 dB, a different antenna arrangement.)
 
 ## State (evening)
 

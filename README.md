@@ -106,7 +106,7 @@ neither is part of the releases, and the transmitter in this branch does not use
 
 ## Research: LoRa at 13 cm
 
-Question: can this chip send LoRa (chirp spread spectrum) inside the 13 cm amateur band, where only our own receivers have to understand it? Log: [`docs/research/LORA-IQ.md`](docs/research/LORA-IQ.md); plan: [`PLAN-LORA-IQ.md`](docs/research/PLAN-LORA-IQ.md). Short version for the main README: see there.
+Question: can this chip send LoRa (chirp spread spectrum) inside the 13 cm amateur band, where only our own receivers have to understand it? Log: [`docs/research/LORA-IQ.md`](docs/research/LORA-IQ.md); plan: [`PLAN-LORA-IQ.md`](docs/research/PLAN-LORA-IQ.md).
 
 There are two ways to make the chirps, and a numpy LoRa PHY that stands in for gr-lora_sdr (which decodes nothing at SF5/SF6):
 
@@ -114,7 +114,7 @@ There are two ways to make the chirps, and a numpy LoRa PHY that stands in for g
   1 to 1.5 dB from the ideal receiver; not a standard LoRa bandwidth. **Scheme W**, a frame written symbol by symbol (the chip copies one window of the chirp into the engine's buffer per symbol, symbol clock from the cycle counter): works at the real SX1280 bandwidths 0.8125 and 1.625 MHz, better at higher SF
   (SF7, 3.2 ms: every frame decodes), costs about 5 to 6 dB.
 * **Polar modulation** (the ordinary transmitter, the PLL word at 40 000 updates/s; `espdr-tx -m lora`, `TX_OP_RANGE`): narrow LoRa up to 80 kHz bandwidth; SF5 to SF10 at 62.5 kHz decode when the receiver follows the board's carrier drift. The decoder of pluto-tx (tested there against a Heltec V3)
-  reads the SF7 and SF8 frames; **the ESP32's own receiver (250 ksps) decodes narrow LoRa sent by a PlutoSDR** (SF7 to SF9 at 62.5 kHz, bit-exact with both decoders).
+  reads the SF7 and SF8 frames; **the ESP32's own receiver (250 ksps) decodes narrow LoRa sent by a PlutoSDR** (SF7 to SF9 at 62.5 kHz, bit-exact with both decoders), but it is at least 16 to 20 dB less sensitive than the Pluto's receiver.
 * **Not done:** a real LoRa chip as receiver of our wide or SF5/SF6 frames (the only check against the standard), other boards, a LoRa network. The temperature correction (`--thermal`) does not suit short bursts.
 
 Tools: `scripts/lora_iq/` (`run.py` engine schemes, `polar.py` scheme P, `esp_rx.py` Pluto transmits and the ESP32 receives, `grcheck.py` decoding with gr-lora_sdr, `selftest.py`, `model.py`), research firmware ops in `firmware/protocol/iqtest.h`. Transmitting needs a transmit permission.
