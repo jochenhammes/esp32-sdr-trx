@@ -15,6 +15,7 @@ is therefore limited to fixed buffers changed between bursts.
 | [IQ-TX-PHASE-A.md](IQ-TX-PHASE-A.md) | the log: failed attempts, **the solution** (clear bit 18 of `0x60006040` after keying), reproduction table, HackRF check, TX filter registers, image correction, level and gain, IM3, seam, phase noise |
 | [DESIGN-IQ-TX.md](DESIGN-IQ-TX.md) | what the engine can be used for, the streaming experiments E1 (CPU refill) and E2 (GDMA refill) with their negative results, the decision |
 | [PLAN-IQ-TX.md](PLAN-IQ-TX.md), [PLAN-IQ-TX-B.md](PLAN-IQ-TX-B.md) | the plans (Phase A to D; plan B: the trial-and-error search for the missing step) |
+| [PLAN-LORA-IQ.md](PLAN-LORA-IQ.md) | plan for LoRa at 13 cm through the engine: whole frame in one buffer (scheme S), symbol-by-symbol rewrite (W), polar for narrow LoRa (P); nothing measured yet |
 | [TX-RESEARCH.md](TX-RESEARCH.md) | the older research notes of the polar transmitter, with Stages 4 to 6 on the engine (static analysis, report of the original author) |
 | [FREQUENCY-DRIFT.md](FREQUENCY-DRIFT.md) | the carrier's drift against the chip temperature (on-chip sensor, crystal model, what it means for RTTY); scripts in `scripts/drift/` |
 | [REGISTER-MAP.md](REGISTER-MAP.md) | register map from the PHY libraries (static, inferred) |

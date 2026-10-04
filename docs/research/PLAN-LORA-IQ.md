@@ -1,49 +1,59 @@
-# Plan: can LoRa (MeshCore/Meshtastic framing) be transmitted through the I/Q playback engine?
+# Plan: LoRa through the I/Q playback engine, entirely in the 13 cm amateur band
 
-Status: plan, nothing measured yet. Base: branch `research/iq-tx` ([README](README.md), [DESIGN-IQ-TX.md](DESIGN-IQ-TX.md), [IQ-TX-PHASE-A.md](IQ-TX-PHASE-A.md)).
+Status: plan (second version), nothing measured yet. Base: branch `research/iq-tx` ([README](README.md), [DESIGN-IQ-TX.md](DESIGN-IQ-TX.md), [IQ-TX-PHASE-A.md](IQ-TX-PHASE-A.md)).
 Test tools: the LoRa/MeshCore code of the (read-only) `pluto-tx` repository, available on the development machine next to the ESP32, plus a PlutoSDR as the receiver.
 
-## 1. What the engine allows, and the one constraint that decides everything
+**Premise.** Transmitting and receiving happen only at 13 cm. The classic LoRa frequencies (433/868/915 MHz) and with them compatibility with MeshCore/Meshtastic nodes do not matter. SF, bandwidth, preamble, coding rate and frame layout are free, so we choose them to suit the engine.
+Only 2.4 GHz SX1280 hardware could ever interoperate (bandwidths 203/406/812.5/1625 kHz), and that is an optional later check.
 
-Measured on the branch: 1..16384 words per trigger (204.8 us at 80 Msps, 409.6 us at 40 Msps), no loop, bank 2 only, re-trigger pause 337 ns, peak amplitude <= 200 of 511, usable bandwidth about +-35 MHz (20 MHz at 40 Msps),
-and **bank 2 cannot be rewritten while the engine plays** (4 to 12 % wrong words from the CPU, GDMA worse). The CPU writes 16384 words in about 90 us (5.5 ns/word) when the engine is idle.
+## 1. What the engine allows, and the constraint that decides everything
 
-Consequence for any signal that changes from buffer to buffer: the engine must be idle while the next buffer is written. If every word is rewritten, the unavoidable dead time is the write time:
-5.5 ns / (25 ns + 5.5 ns) = **18 % of the time at 40 Msps, 30 % at 80 Msps** (parallel writing by both cores might halve it; unmeasured). A signal that is the same buffer again (a preamble of identical up-chirps) has only the 337 ns pause.
+Measured on the branch: 1..16384 words per trigger (**204.8 us at 80 Msps, 409.6 us at 40 Msps**), no loop, bank 2 only, re-trigger pause 337 ns, peak amplitude <= 200 of 511, bandwidth about +-35 MHz with the TX filter registers opened (20 MHz at 40 Msps), and
+**bank 2 cannot be rewritten while the engine plays** (4 to 12 % wrong words from the CPU, GDMA worse). With the engine idle the CPU writes 16384 words in about 90 us (5.5 ns/word).
 
-## 2. Why LoRa is a good candidate anyway
+Two consequences:
 
-* Constant envelope and **non-coherent** per symbol (dechirp, FFT, peak bin): immune to the PLL phase noise that limits OFDM here (28 % EVM per 179 us), tolerant of the seam and of the +40 kHz crystal offset (receivers estimate CFO and sampling offset).
-* A symbol of value k is the base up-chirp, cyclically shifted by k chips: **symbol k = a window of one periodic base chirp** (starting at k x oversampling words). The chip needs one stored base chirp and a memcpy of a window per symbol; no arithmetic in the write loop.
-* The host does **not** stream samples: it sends only the symbol values (SF bits each, a few hundred symbols for a MeshCore packet) plus the frame parameters. The 0.87 MB/s link is irrelevant.
-* If part of every symbol is missing (the engine plays the first n words of the symbol period, the last words are the rewrite gap), the demodulator sees a tone that is shorter by the missing part: **about -1.7 dB at 40 Msps, -3.2 dB at 80 Msps** in the FFT peak, at an unchanged symbol clock. Hypothesis, to be measured in L0.
-* LoRa's FEC (CR 4/7, 4/8) corrects one bad bit per codeword; the interleaver spreads one wrong symbol over one bit in each of the SF codewords. One lost symbol per interleaver block is therefore correctable in principle (not needed for the truncated-tail scheme, but it gives margin).
+* A signal that fits **one buffer** needs no rewrite and no timing control: one trigger, a true burst.
+* A signal that changes from buffer to buffer has dead time while the next buffer is written: at least 18 % at 40 Msps and 30 % at 80 Msps if every word is rewritten (both cores writing might halve it; unmeasured). Identical buffers cost only the 337 ns pause.
 
-## 3. Which LoRa settings fit
+## 2. The frame time rule
 
-Symbol time `Ts = 2^SF / BW`; words per symbol = `Ts x Fs`; one buffer holds 16384 words. "Oversampling" = Fs/BW (an integer makes the window offsets exact).
+A LoRa frame lasts (symbols) x Ts with `Ts = 2^SF / BW`. The protocol on top (LoRaWAN, MeshCore, our own) only changes the **byte count and the preamble/CR defaults**, never the time per symbol. What decides whether a frame fits one buffer is the PHY: **low SF and wide BW**.
+Symbols per frame (SX127x formula: explicit header, CRC on; payload symbols = 8 + ceil((8 PL - 4 SF + 28 + 16 CRC) / (4 SF)) x (CR + 4)); preamble + 4.25 sync/SFD symbols included:
 
-| Setting | Ts | words at 40 Msps | buffers per symbol | verdict |
-|---|---|---|---|---|
-| LoRa 2.4 GHz SF5, BW 1625 kHz | 19.7 us | 788 | 0.05 | fits easily, many symbols per second; oversampling 24.6 (not an integer) |
-| LoRa 2.4 GHz SF7, BW 812.5 / 1625 kHz | 157.5 / 78.8 us | 6302 / 3151 | 0.38 / 0.19 | fits |
-| LoRa 2.4 GHz SF9, BW 1625 kHz | 315 us | 12603 | 0.77 | fits (40 Msps only) |
-| Meshtastic ShortTurbo SF7, BW 500 kHz | 256 us | 10240 (os 80) | 0.62 | fits, integer oversampling: **first hardware target** |
-| Meshtastic ShortFast SF7, BW 250 kHz | 512 us | 20480 (os 160) | 1.25 | needs two buffers per symbol (**gate in the middle of a symbol), second step |
-| MeshCore EU/UK Narrow SF8, BW 62.5 kHz | 4096 us | 163840 | 10 | does not fit: the base chirp ring alone is 640 KB (more than the free SRAM) and 10 buffers per symbol with a gap each |
-| Meshtastic LongFast SF11, BW 250 kHz | 8192 us | 327680 | 20 | does not fit |
+| Frame | symbols | SF5 BW 8 MHz | SF5 BW 4 MHz | SF5 BW 1625 kHz | SF5 BW 812.5 kHz | SF7 BW 125 kHz |
+|---|---|---|---|---|---|---|
+| LoRaWAN layout, 12 B (no FRMPayload), preamble 8, CR 4/5 | 50.25 | **201 us** | **402 us** | 990 us | 1.98 ms | 41.2 ms |
+| own frame, 16 B, preamble 8, CR 4/5 | 60.25 | **241 us** | 482 us | 1.19 ms | 2.37 ms | 51.5 ms |
+| LoRaWAN layout, 20 B | 70.25 | **281 us** | 562 us | 1.38 ms | 2.77 ms | 56.6 ms |
+| MeshCore raw, 6 B, preamble 32, CR 4/8 | 76.25 | **305 us** | 610 us | 1.50 ms | 3.00 ms | 69.9 ms |
 
-Narrow, long-symbol LoRa (what MeshCore and Meshtastic actually use on 868 MHz) is **not** a job for the I/Q engine: the engine runs 640 times faster than the signal needs, and every 409.6 us slice would need new content. The polar transmitter
-(PLL word at 40 kHz, 457 Hz steps with error feedback) is the natural baseline there: a 62.5 kHz chirp over 4096 us is about 164 updates with 0.38 kHz per step, which is finer than one PLL step. It needs the offset range widened from +-44 to about +-70 steps
-(`TX_MAX_STEPS`, `TX_LOW_MARGIN` in `firmware/protocol/transmit.h`). This is **baseline P** in the plan; it answers "is the engine the right tool" instead of assuming it.
+Bold = fits one 409.6 us buffer at 40 Msps (the 201 us case also fits 204.8 us at 80 Msps). The ISM2400 LoRaWAN parameters (BW 812.5 kHz) and everything narrower are far too long for one buffer.
 
-## 4. Frequency and compatibility: what can and cannot be tested
+## 3. Three ways to transmit, and what each can do
 
-* The LO reaches 2320..2450 MHz (1.84..2.79 GHz with the reported 5/6 mode). **868/869 MHz is out of reach**, so no real MeshCore/Meshtastic node (SX126x/SX127x at 868 MHz) can receive these tests.
-  What is tested is the **waveform and the framing**: same SF, BW, CR, preamble, sync symbols, header, CRC and payload, at 2.4 GHz, decoded by `pluto-tx`'s own receiver and parsed by `meshcore_codec`.
-* A real 2.4 GHz LoRa node (SX1280) would be a later, optional check; its bandwidths are 203/406/812.5/1625 kHz.
-* Legal: only inside the amateur band (2320..2400 MHz, our firmware also allows up to 2450), cabled and attenuated, transmit permission required. No encrypted payloads on the air: use a MeshCore advert (public key, name, signature; not encrypted) or a plain test string
-  (`meshcore_codec.build_advert`), not group or direct messages (AES). Every emitted line must be in the band: LO +- (offset + BW/2), image (33 dB raw, 62 dB corrected), harmonics, LO feedthrough at the LO.
+* **Scheme S, the whole frame in one buffer (first target).** SF5, BW 4 MHz at 40 Msps (oversampling 10) or BW 8 MHz at 80 Msps (oversampling 10), frame <= about 12 to 24 bytes (see the table). The host renders the complete frame (preamble, sync, SFD, header, payload) at the engine rate with gr-lora_sdr's `modulate`
+  (`samp_rate_mult = 10`, so no resampling), quantises to 10-bit I/Q at peak 200, uploads 64 KiB, the chip triggers once (and repeats it every few ms for statistics). No rewrite, no timing control, no holes. The frame is LoRa modulation but not a standard LoRa bandwidth, so only our own receiver decodes it.
+* **Scheme W, symbol by symbol with rewrite.** For frames that do not fit one buffer: BW 812.5/1625 kHz (the real SX1280 bandwidths) or 500 kHz, SF5..9, Ts <= one buffer. The chip keeps a periodic base chirp ring and copies a window (symbol k = start at k x oversampling) into bank 2 for every symbol,
+  locks the symbol period to Ts with the cycle counter and drops the last part of every symbol (the rewrite gap). Expected cost: play fraction 0.82 at 40 Msps, 0.695 at 80 Msps = about -1.7 / -3.2 dB in the FFT peak (hypothesis, L0). Preamble symbols are identical and need no copy. The host sends only symbol values and the frame parameters.
+* **Scheme P, polar (the existing transmitter) for narrow LoRa.** BW 62.5 to 125 kHz, long symbols: the PLL word at 40 kHz and 457 Hz steps with error feedback follows a chirp (62.5 kHz over 4096 us = 164 updates of 0.38 kHz). It needs the offset range widened from +-44 to about +-70 steps (`TX_MAX_STEPS`, `TX_LOW_MARGIN` in `firmware/protocol/transmit.h`).
+  The engine does not help here: it runs 640 times faster than the signal and every 409.6 us slice would need new content (the base chirp ring for SF8/62.5 kHz alone is 640 KB).
+
+**Receiving at 13 cm.** The ESP32 receiver (`espdr-rx`) delivers 250 or 333 ksps, enough only for LoRa up to about 125 to 250 kHz bandwidth. Therefore two worlds:
+
+| | wide LoRa (BW >= 0.8 MHz, SF5..) | narrow LoRa (BW 62.5..125 kHz) |
+|---|---|---|
+| TX | I/Q engine, scheme S or W | polar, scheme P |
+| RX | PlutoSDR (16 Msps for BW 4 MHz; 32 Msps for 8 MHz is beyond the 30.72 Msps of the Ethernet setup, so use oversampling 2 there) or HackRF | ESP32 `espdr-rx` through rtl_tcp, or the Pluto |
+| ESP32-only link | no (the ESP32 cannot receive wide) | yes |
+
+## 4. Frame layout (our own network, free choice)
+
+* **Own minimal frame, plaintext (default):** short header with callsign and counter, payload, 16-bit CRC from the LoRa PHY. Shortest, no cryptography, clean for the amateur band.
+* **MeshCore raw** (`meshcore_codec.build_packet(ROUTE_DIRECT, PT_RAW_CUSTOM, payload)`): 2 header bytes plus payload, unencrypted; useful because the existing MeshCore tools parse it (`parse_packet`, `summarize_packet`). Adverts (`build_advert`) are public and unencrypted too (signature only), 100+ bytes: not for scheme S.
+* **LoRaWAN layout (optional):** MHDR, DevAddr, FCtrl, FCnt, [FPort, FRMPayload], MIC = 12 bytes without payload. Preamble 8, sync word 0x34 (symbols 24, 32), CR 4/5, uplink without inverted IQ. There is no LoRaWAN code in `pluto-tx`; a builder with the MIC (AES-CMAC, `cryptography`) is about 40 lines.
+  LoRaWAN always encrypts FRMPayload (AES) and authenticates with the MIC. **On the amateur band keep FRMPayload empty or use a published test key**, and check the rules; the MIC alone only authenticates. It buys test vectors and a well-defined short frame, nothing for the timing.
+* Legal in all cases: inside the amateur band, no encryption that obscures the content, callsign in the frame, cabled or attenuated for tests, transmit permission required. Every emitted line must be in the band: LO +- (offset + BW/2) (4 to 8 MHz wide: check the band plan segment), image (33 dB raw, 62 dB corrected), harmonics, LO feedthrough at the LO.
 
 ## 5. Test chain built from the `pluto-tx` functions (read-only repository, used as a library)
 
@@ -51,47 +61,46 @@ New scripts live in this repository (`scripts/lora_iq/`), importing from `pluto-
 
 | Step | Existing function | Use |
 |---|---|---|
-| packet | `pluto_tx.meshcore_codec.build_advert` / `build_packet`, `Identity.generate()` | the payload bytes |
-| reference baseband | `PlutoTxFlowgraph(device_type="fake", mode=MODE_MESHCORE, ...)`, IQ from `fg.device.sink.data()` (as `send()` in `tests/test_meshcore_flowgraph.py`, 2.5 Msps) | whole-chain reference for the offline model (L0), including preamble/sync/SFD from `config.LoraPreset` |
-| symbol values | rebuild the chain of `pluto_tx.lora.LoraTxEncoder` in a script (whitening, header, add_crc, hamming_enc, interleaver, gray_demap) and put a vector sink on the `gray_demap` output (= the input of `modulate`) | the symbol sequence that the ESP32 will play; `modulate` itself is not needed in the loop |
-| framing | `config.LoraPreset` (`spreading_factor`, `bandwidth_hz`, `coding_rate`, `preamble_len`, `sync_word` = 0x12 -> symbols 8, 16 for MeshCore; `meshtastic_sync_symbols(sf)` for Meshtastic) | preamble length, sync symbols, 2.25 SFD down-chirps |
-| receive | Pluto at LO +- offset, `pluto_advanced_rx.lora_rx.LoraRxDecoder(sf, bw, cr, center_freq_hz != 0, preamb_len, sync_word)` or the full RX flowgraph; then `meshcore_codec.parse_packet` / `summarize_packet` | verdict: CRC ok, bytes identical, packet parses |
+| payload | `pluto_tx.meshcore_codec.build_packet` / `build_advert`, `Identity.generate()`; own frame builder | the frame bytes |
+| render | `pluto_tx.lora.LoraTxEncoder` (`sf`, `bw`, `cr`, `preamb_len`, `sync_word`, `samp_rate_mult`), IQ from a vector sink at the end instead of the SDR sink; for scheme S with `samp_rate_mult=10` at the engine rate | the single-buffer frame |
+| reference | `PlutoTxFlowgraph(device_type="fake", mode=MODE_MESHCORE)` and its `device.sink` (as `send()` in `tests/test_meshcore_flowgraph.py`) | whole-chain reference for the offline model |
+| symbol values (scheme W) | rebuild the chain of `LoraTxEncoder` (whitening, header, add_crc, hamming_enc, interleaver, gray_demap) with a vector sink on the `gray_demap` output (= input of `modulate`) | symbols the ESP32 plays |
+| framing | `config.LoraPreset`-style values (`spreading_factor`, `bandwidth_hz`, `coding_rate`, `preamble_len`, `sync_word`) | our own parameter set, not the 868 MHz presets |
+| receive | `pluto_advanced_rx.lora_rx.LoraRxDecoder(sf, bw, cr, center_freq_hz != 0, preamb_len, sync_word)` with the Pluto, or a numpy dechirp/FFT receiver as a second, independent check | CRC ok, bytes identical, `parse_packet` for MeshCore raw |
 
-Reference bytes are compared at three levels: symbol values (RX demod output), payload bytes (CRC ok), parsed MeshCore packet. A numpy dechirp/FFT receiver is added as a second, independent check (it runs without GNU Radio, also in cloud sessions).
+Open point that decides the receiver: **`pluto-tx` tested SF7..12 at 62.5..500 kHz only.** SF5/SF6 and BW 4 to 8 MHz are unverified in gr-lora_sdr (oversampling, buffer sizes, LoRa header and Hamming at SF5); this is step L0a below, and the numpy receiver is the fallback.
 
-## 6. Phases with **gates
+## 6. Phases with gates
 
-**L0, offline model (no hardware, local machine; the numpy part also runs anywhere).** Take the reference IQ of a MeshCore advert at the chosen BW, resample to 40 or 80 Msps, apply the engine model, decode, measure packet error rate against SNR:
-10-bit quantisation at peak <= 200, the truncated tail (play fraction f = 0.82 / 0.695), the 337 ns pause, image rejection 33/62 dB, LO feedthrough, crystal offset +40 kHz, the polar staircase for baseline P (update 40 kHz, 457 Hz, +-70 steps, error feedback).
-*Gate:* decoding with f <= 0.82 loses at most about 3 dB against the ideal signal; else drop scheme W.
+**L0a, what gr-lora_sdr can do (local machine, no radio).** Loopback `LoraTxEncoder` -> `LoraRxDecoder` at SF5 and SF6 with BW 4 and 8 MHz (oversampling 10 and 2), then the same at SF7 with 125/500 kHz as a control. Bit-exact payload round trip over 20 random payloads.
+*Gate:* works -> use gr-lora_sdr as the receiver; fails -> write the numpy receiver first (dechirp, FFT, Gray, deinterleave, Hamming, CRC) and use it as the reference.
 
-**L1, one fixed buffer on the air (hardware; existing ops only: IQ_OP_FILL / PLAY).** BW 500 kHz, SF7: a buffer with one up-chirp (Ts = 256 us = 10240 words at 40 Msps, minus the pause), re-triggered back to back = a preamble of identical up-chirps (design A, gap 337 ns, no rewrite). The chirp comes from a new fill mode that renders the base chirp.
-Pluto + dechirp: peak bin position stable, symbol clock, SNR; `frame_sync` of gr-lora_sdr detects the preamble. Compare the line quality with the ideal chirp from L0.
-*Gate:* detected preamble with a stable peak; otherwise fix the chirp rendering (phase wrap, oversampling) before going on.
+**L0b, offline engine model.** Reference IQ -> engine model -> decode, packet error rate against SNR. Model: 10-bit quantisation at peak 200, image 33/62 dB, LO feedthrough, +40 kHz crystal offset, the 337 ns pause; for scheme W the truncated tail (play fraction 0.82/0.695); for scheme P the polar staircase (40 kHz, 457 Hz, +-70 steps, error feedback).
+*Gate:* scheme S loses at most about 1 dB against ideal; scheme W at most about 3 dB; otherwise drop that scheme.
 
-**L2, symbols with rewrite, scheme W (hardware, new research op `IQ_OP_LORA`).** The host sends the parameters (SF, BW code, oversampling, preamble length, sync symbols) and the symbol values. The firmware renders the base chirp ring once (10240 words at BW 500 kHz, SF7, in banks 0/1; bank 2 is the playback bank, bank 3 stays masked),
-then per symbol: wait for done, copy the window (up to two segments) into bank 2, trigger, with the symbol period locked to `Ts` by the cycle counter (play count = `Ts x Fs / (1 + 5.5 ns x Fs)`, i.e. the tail is dropped). Identical symbols (preamble) skip the copy. SFD down-chirps: second ring, conju**gate. Pause compensation as in design A.
-Receiver: Pluto, `LoraRxDecoder`. Start with a frame of 16 preamble + sync + SFD + header + a short payload (as few bytes as possible), then a MeshCore advert (about 100 bytes, roughly 100 to 200 symbols at SF7).
-*Metrics:* packet error rate against attenuation (cable + attenuator or distance), against the play fraction f (vary the count deliberately, to compare with the L0 prediction), measured symbol timing jitter, spectrum and out-of-band lines.
-*Gate:* CRC-ok packets with the right bytes, reproducible; loss against L0 prediction within a few dB.
+**L1, scheme S on the air (hardware; one new op for bulk upload).** BW 4 MHz, SF5 at 40 Msps, 12 to 16 byte frame. A new op `IQ_OP_LOAD` uploads 16384 words into bank 2 (the existing ops only fill from a generator or poke single words); then `IQ_OP_PLAY` triggers once, repeated every few ms. First the preamble alone (identical up-chirps: compare peak bin stability and SNR with the model), then the whole frame.
+Receiver: Pluto at 16 Msps, `LoraRxDecoder`. Metrics: packet error rate against attenuation, spectrum, out-of-band lines, LO feedthrough, image.
+*Gate:* CRC-ok frames with the right bytes, reproducible, loss against the model within a few dB. Then repeat at BW 8 MHz and 80 Msps (the 201 us frame) and with a MeshCore raw frame (305 us, 40 Msps only).
 
-**L3, two buffers per symbol (BW 250 kHz, SF7, Ts = 512 us).** The symbol is cut into two halves with a gap in the middle. Models in L0 first (periodic 2 kHz-order gating gives ghost peaks at about -14 dBc; check the decoder). Only if L2 passed and L0 predicts success.
+**L2, scheme W (hardware, new research op `IQ_OP_LORA`).** BW 812.5 kHz or 1625 kHz (or 500 kHz), SF5..7: the chirp ring is rendered once (a few thousand words), the symbols arrive from the host, the chip copies windows and triggers with the symbol period locked to Ts. Frames of 12 to 20 bytes (2 to 3 ms).
+Vary the play fraction on purpose and compare with L0b. *Gate:* CRC-ok frames within about 3 dB of the model. Only if L1 passed.
 
-**L4, baseline P: polar LoRa at BW 62.5 kHz, SF8 (MeshCore EU/UK Narrow parameters).** Extend the polar transmitter's offset range, host converts symbol values to frequency offsets (the chirp is the frequency track: 164 updates per symbol, error-feedback quantised), decode with the same receiver chain.
-*Gate:* answers whether narrow, long-symbol LoRa works at all on this chip; it is the only path to MeshCore/Meshtastic's real parameters (waveform only, 2.4 GHz). Needs no engine, so it can run in parallel to L2.
+**L3, scheme P at BW 62.5 kHz, SF8 (parallel to L1/L2, needs no engine).** Widen the offset range, host converts symbol values into frequency offsets, decode with the Pluto and then with the ESP32 receiver (`espdr-rx` through rtl_tcp, 250 ksps) for an ESP32-only link.
+*Gate:* answers whether narrow LoRa works at all on this chip and whether the ESP32 can receive it.
 
-**L5, comparison and decision.** Table: scheme, parameters, packet error rate against level, loss in dB against ideal, spectrum. Result written as Stage 7 in `TX-RESEARCH.md`; the `research/iq-tx` README gets a line. If W works at BW >= 500 kHz and P works at 62.5 kHz, the product statement is: wide LoRa through the engine (waveform-compatible with SX1280 at 2.4 GHz after retuning BW to 812.5/1625 kHz), narrow LoRa through the polar path.
+**L4, comparison and decision.** Table: scheme, parameters, frame time, packet error rate against level, loss in dB against ideal, spectrum. Result as Stage 7 in `TX-RESEARCH.md` and a line in the branch README. Expected product statement if it works: wide LoRa bursts through the engine (RX at the Pluto), narrow LoRa through the polar path (ESP32-only link).
 
 ## 7. Risks and stop rules
 
-* **Symbol clock accuracy:** the symbol period comes from the CPU cycle counter (240 MHz, derived from the same crystal as the LO). Measure the period over a whole frame; error budget about 1 chip over a frame. Stop W if the period jitters by more than about 1/4 chip.
-* **Gate/hole spurs:** if the decoder's FFT sees ghost peaks, shorten the hole (parallel write by both cores; the second core must not disturb the engine, to be measured as in `IQ_OP_BENCH`), or use 40 Msps instead of 80.
-* **Oversampling not an integer** (812.5/1625 kHz at 40 Msps): round the window offset to the nearest word (error below half a word of 25 ns, far below one chip) or use the test BW 500 kHz/1 MHz first.
-* **gr-lora_sdr quirks** (documented in `pluto_tx/lora.py`: needs `center_freq != 0`, big buffers, preamble/sync symbols of the preset, LD_LIBRARY_PATH): the numpy receiver is the cross-check.
-* **Memory:** the ring for BW 250 kHz, SF7 is 20480 words (80 KB) and fits banks 0/1; BW 62.5 kHz does not (see section 3), which is why it is baseline P.
-* **Everything radiates:** short bursts (the research firmware limits the length), lowest gain code, cable and attenuator. No encrypted MeshCore messages on the amateur band.
+* **gr-lora_sdr limits at SF5 / wide BW:** see L0a; the numpy receiver is the fallback and doubles as an independent check.
+* **The frame must fit one buffer exactly:** at BW 4 MHz the LoRaWAN-layout frame takes 402 of 409.6 us. A longer payload or preamble breaks scheme S (go to BW 8 MHz at 80 Msps with <= 12 bytes, or to scheme W). Compute the symbol count from the real encoder output, not from the formula.
+* **Amplitude and spectrum of a 4 to 8 MHz wide signal:** the TX filter is flat only with block 0x67 registers 12/13 = 0; peak <= 200 of 511; check the Pluto's own filter and the sampling rate.
+* **Symbol clock accuracy (scheme W):** the symbol period comes from the CPU cycle counter (240 MHz, same crystal as the LO); measure over a whole frame; stop if the period jitters by more than about 1/4 chip.
+* **Spurs from the rewrite gaps (scheme W):** if the decoder sees ghost peaks, shorten the gap (second core writing in parallel, to be measured as with `IQ_OP_BENCH`) or use 40 Msps.
+* **Oversampling not an integer** (812.5/1625 kHz at 40 Msps: 49.2/24.6): round the window offset to the nearest word (error below half a word, far below one chip), or start with BW 500 kHz / 1 MHz.
+* **Everything radiates:** short bursts (the research firmware limits the length), lowest useful gain code, cable and attenuator, transmit permission, no encrypted content.
 
 ## 8. Deliverables
 
-`scripts/lora_iq/model.py` (offline model, L0), `scripts/lora_iq/symbols.py` (symbol values from the pluto-tx chain), `scripts/lora_iq/run.py` (L1 to L4 runs, receiver, metrics), `firmware/protocol/iqtest.h` + `firmware/src/radio.c` (`IQ_OP_LORA`, chirp ring, window copy, paced triggering),
-`docs/research/LORA-IQ.md` (log in the style of `IQ-TX-PHASE-A.md`), a Stage 7 entry in `TX-RESEARCH.md`.
+`scripts/lora_iq/model.py` (offline model), `scripts/lora_iq/render.py` (frame -> 10-bit words, symbol values), `scripts/lora_iq/run.py` (L1 to L3 runs, receiver, metrics), a numpy LoRa receiver if L0a fails,
+`firmware/protocol/iqtest.h` + `firmware/src/radio.c` (`IQ_OP_LOAD`, later `IQ_OP_LORA`), `docs/research/LORA-IQ.md` (log in the style of `IQ-TX-PHASE-A.md`), a Stage 7 entry in `TX-RESEARCH.md`.
