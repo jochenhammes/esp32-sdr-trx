@@ -22,6 +22,7 @@ import lora_np as ln  # noqa: E402
 PRE_G, PRE_P = 0.010, -0.055          # image correction of this board (IQ-TX-PHASE-A.md)
 DAC_RATE = 40e6
 PAYLOAD = b"DA2JH LORA-1"             # 12 bytes: the call sign belongs in the frame
+MESHCORE_RAW = bytes.fromhex("3e004441324a48")   # meshcore_codec.build_packet(ROUTE_DIRECT, PT_RAW_CUSTOM, b"DA2JH"): 2 header bytes + the call sign, unencrypted
 
 
 def render(payload, sf, bw, f_off, amp=200, os_=None, rate=DAC_RATE, cr=1, preamble=8, g=PRE_G, p=PRE_P):
@@ -65,8 +66,8 @@ def lines_on_air(lo_hz, f_off, bw):
 
 
 def cmd_render(args):
-    words, ii, qq, n = render(PAYLOAD, args.sf, args.bw, args.offset, args.amp)
-    print(f"SF{args.sf} BW {args.bw / 1e6:g} MHz at {DAC_RATE / 1e6:g} Msps: {n} words = {n / DAC_RATE * 1e6:.1f} us (buffer {16384 / DAC_RATE * 1e6:.1f} us), peak I {abs(ii).max()}, Q {abs(qq).max()}")
+    words, ii, qq, n = render(PAYLOAD, args.sf, args.bw, args.offset, args.amp, rate=args.dac_rate, cr=args.cr, preamble=args.preamble)
+    print(f"SF{args.sf} BW {args.bw / 1e6:g} MHz at {args.dac_rate / 1e6:g} Msps: {n} words = {n / args.dac_rate * 1e6:.1f} us (buffer {16384 / args.dac_rate * 1e6:.1f} us), peak I {abs(ii).max()}, Q {abs(qq).max()}")
     lo, hi, lo_line, image = lines_on_air(args.lo * 1e6, args.offset, args.bw)
     print(f"band edges {lo / 1e6:.3f} .. {hi / 1e6:.3f} MHz, LO line {lo_line / 1e6:.3f}, image about {image / 1e6:.3f} MHz")
 
@@ -91,7 +92,7 @@ def band_snr(y, fs, bw, good):
 def analyse(x, fs, f_off, args, triggers=None):
     t = np.arange(len(x)) / fs
     y = (x - np.mean(x)) * np.exp(-2j * np.pi * f_off * t)
-    frames = ln.demodulate_all(y.astype(np.complex64), fs, args.sf, args.bw)
+    frames = ln.demodulate_all(y.astype(np.complex64), fs, args.sf, args.bw, preamble=args.preamble)
     good = [r for r in frames if r.get("crc_ok") and r.get("payload") == PAYLOAD]
     snrs = [r["snr_db"] for r in good]
     real = band_snr(y, fs, args.bw, good)
@@ -111,8 +112,8 @@ def analyse(x, fs, f_off, args, triggers=None):
 def cmd_send(args):
     import iqtest as it
     lo_req = args.lo * 1e6
-    words, ii, qq, n = render(PAYLOAD, args.sf, args.bw, args.offset, args.amp)
-    print(f"frame: {n} words = {n / DAC_RATE * 1e6:.1f} us at {DAC_RATE / 1e6:g} Msps, SF{args.sf}, BW {args.bw / 1e6:g} MHz, shifted by {args.offset / 1e6:+.2f} MHz")
+    words, ii, qq, n = render(PAYLOAD, args.sf, args.bw, args.offset, args.amp, rate=args.dac_rate, cr=args.cr, preamble=args.preamble)
+    print(f"frame: {n} words = {n / args.dac_rate * 1e6:.1f} us at {args.dac_rate / 1e6:g} Msps, SF{args.sf}, BW {args.bw / 1e6:g} MHz, shifted by {args.offset / 1e6:+.2f} MHz")
     lo_e, hi_e, lo_line, image = lines_on_air(lo_req, args.offset, args.bw)
     print(f"on the air: {lo_e / 1e6:.3f} .. {hi_e / 1e6:.3f} MHz, LO line {lo_line / 1e6:.3f}, image about {image / 1e6:.3f} MHz; gain code {args.gain}")
     if not (2320e6 <= lo_e and hi_e <= 2450e6):
@@ -131,7 +132,7 @@ def cmd_send(args):
         for pg in [float(v) for v in str(args.pluto_gain).split(",")]:
             pluto.tune(lo + args.center_off, args.fs, pg)
             time.sleep(0.2)
-            esp.play_start(args.ms, count=n, rate80=False)
+            esp.play_start(args.ms, count=n, rate80=args.dac_rate > 50e6)
             time.sleep(0.12)
             x = pluto.capture(args.n)
             st, done, to = esp.play_result()
@@ -147,7 +148,7 @@ def cmd_send(args):
             np.savez_compressed(args.save.replace(".npz", f"_pg{pg:g}.npz"), x=x.astype(np.complex64), fs=args.fs, shift=shift)
         print(f"--- Pluto gain {pg:g} dB")
         good, frames = analyse(x, args.fs, shift, args, done)
-        period = (n / DAC_RATE + args.gap_us * 1e-6 + 0.34e-6) * args.fs
+        period = (n / args.dac_rate + args.gap_us * 1e-6 + 0.34e-6) * args.fs
         slots = (round((good[-1]["start"] - good[0]["start"]) / period) + 1) if len(good) > 1 else max(len(good), 1)
         results.append((pg, np.mean([r["snr_db"] for r in good]) if good else float("nan"), len(good), slots))
     print("Pluto gain [dB] | SNR in the bandwidth [dB] | frames decoded / slots | packet error rate")
@@ -162,7 +163,7 @@ def cmd_noise(args):
     x, fs, shift = d["x"], float(d["fs"]), float(d["shift"])
     t = np.arange(len(x)) / fs
     y = ((x - np.mean(x)) * np.exp(-2j * np.pi * shift * t)).astype(np.complex64)
-    frames = ln.demodulate_all(y, fs, args.sf, args.bw)
+    frames = ln.demodulate_all(y, fs, args.sf, args.bw, preamble=args.preamble)
     good = [r for r in frames if r.get("crc_ok") and r.get("payload") == PAYLOAD]
     base = band_snr(y, fs, args.bw, good)
     slots = len(good)
@@ -182,7 +183,7 @@ def cmd_noise(args):
         sigma2 = add * fs / args.bw                                   # white over fs, in-band share bw / fs
         segment = y[first - 2000:last + 2000]
         n = (rng.standard_normal(len(segment)) + 1j * rng.standard_normal(len(segment))) * np.sqrt(sigma2 / 2)
-        fr = ln.demodulate_all((segment + n).astype(np.complex64), fs, args.sf, args.bw)
+        fr = ln.demodulate_all((segment + n).astype(np.complex64), fs, args.sf, args.bw, preamble=args.preamble)
         ok = sum(1 for r in fr if r.get("crc_ok") and r.get("payload") == PAYLOAD)
         print(f"  {snr:6.1f}        {10 * np.log10(ps / (pn_have + add)):6.1f}            {ok:4d} / {slots:4d}        {1 - ok / slots:5.2f}", flush=True)
 
@@ -211,8 +212,15 @@ def main():
     ap.add_argument("--center-off", type=float, default=0.0, help="Pluto centre minus ESP LO, Hz")
     ap.add_argument("--pluto-gain", default="30", help="Pluto gain in dB; several separated by commas make a sweep")
     ap.add_argument("--save")
+    ap.add_argument("--dac-rate", type=float, default=40e6, help="engine sample rate: 40e6 or 80e6")
+    ap.add_argument("--cr", type=int, default=1, help="coding rate 4/(4+cr)")
+    ap.add_argument("--preamble", type=int, default=8)
+    ap.add_argument("--frame", choices=("own", "meshcore"), default="own", help="own: 12 bytes with the call sign; meshcore: a MeshCore raw packet (unencrypted)")
     ap.add_argument("--snrs", default="12,9,7,5,4,3,2,1,0,-1")
     args = ap.parse_args()
+    global PAYLOAD
+    if args.frame == "meshcore":
+        PAYLOAD = MESHCORE_RAW
     if args.cmd == "render":
         cmd_render(args)
     elif args.cmd == "send":
