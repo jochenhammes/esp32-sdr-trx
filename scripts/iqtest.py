@@ -132,8 +132,16 @@ class Esp:
         self.lo_hz = lo
         return lo, word
 
-    def key(self, gain=127, bank=4):
+    TONE_REG = 0x60006040   # bit 18 = enable of the PHY's tone generator (a=1 in start_tx_tone_step)
+
+    def key(self, gain=127, bank=4, tone_off=True):
+        """Keys the chain (carrier on). With tone_off the tone generator's enable bit 18 of 0x60006040 is cleared afterwards: the chain stays keyed, the
+        LO-feedthrough 'carrier' disappears and the playback engine's samples reach the antenna. FOUND 2026-10-04: without this the engine is invisible."""
         _, rb = self.c(IQ_OP_KEY, gain | (bank << 8))
+        if tone_off:
+            self.c(IQ_OP_ADDR, self.TONE_REG)
+            v = self.c(IQ_OP_PEEK)[1]
+            self.c(IQ_OP_POKE, v & ~(1 << 18) & 0xFFFFFFFF)
         return rb
 
     def fill(self, tone_hz, rate_msps, amp, mode):

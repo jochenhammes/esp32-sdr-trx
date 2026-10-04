@@ -1,5 +1,7 @@
 # Plan B: find out ourselves why the playback engine does not radiate (trial and error allowed)
 
+**SOLVED the same day: clear bit 18 of `0x60006040` after keying (see IQ-TX-PHASE-A.md, last section). The hypothesis table below is kept as the record.**
+
 Status (2026-10-04): [IQ-TX-PHASE-A.md](IQ-TX-PHASE-A.md) shows that the engine runs and is gated by the bank grant, that it changes the PHY's TX power detector (ratio about 0.80, independent of
 the analog gain), and that no sideband appears at the antenna. We cannot wait for the original author, so we search the chip's transmit-path state ourselves.
 

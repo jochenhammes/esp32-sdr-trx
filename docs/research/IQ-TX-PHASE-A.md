@@ -1,6 +1,8 @@
 # Phase A log: reproducing the I/Q playback engine (2026-10-04, branch `research/iq-tx`)
 
-**Result so far: NOT reproduced.** The engine at `0x60033D64` runs and behaves as reported at the register level, but nothing it plays reaches the antenna on this board.
+**UPDATE (later the same day): REPRODUCED, see the section at the end. The text in between records the failed attempts and why.**
+
+**Result of the first attempts: NOT reproduced.** The engine at `0x60033D64` runs and behaves as reported at the register level, but nothing it plays reaches the antenna on this board.
 Everything below was measured with the research build (`make -C firmware TX=1 IQTEST=1 NARROWBAND=1`, image `build-iq`, ops in `firmware/protocol/iqtest.h`,
 host script `scripts/iqtest.py`). The product images are unchanged.
 
@@ -97,3 +99,35 @@ not in a signal path to the mixer. PBUS (4,1), (4,2), (4,3), (5,1), (5,3) are th
 
 Status after this round: the engine runs, is gated by the bank grant, affects the transmit chain at a digital level, and produces no sideband at the antenna. Not tried: the BB TX state
 registers beyond `tx_state_set`, `0x60033D84` (touched by `tx_a_frame`), anything that needs h0m3us3r's initialisation.
+
+## SOLVED (2026-10-04): clear bit 18 of `0x60006040` after keying
+
+The sensor reads in the earlier tests had a side effect that nobody had looked for: `txtone_linear_pwr()` and the functions it calls clear **bit 18 of `0x60006040`**
+(`0x2006E800` -> `0x2002E800`), the enable bit of the PHY's tone generator. With that bit cleared the keyed chain stays on, the LO-feedthrough "carrier" falls away
+and the playback engine's samples reach the antenna. Order of an experiment that showed it (2 x 2 test, fresh PLL each time):
+
+| continuous-TX bit `0x600310D0` | sensor reads before the Pluto measurement | carrier | tone at +5 MHz |
+|---|---|---|---|
+| off | no | +68.6 dB | none |
+| off | yes (clears bit 18) | +13.9 dB | **+68.4 dB** |
+| on | no | +68.7 dB | none |
+| on | yes (clears bit 18) | +13.9 dB | **+68.3 dB** |
+
+(The continuous-TX bit is irrelevant. The 0.80 ratio of the earlier sensor tests was the engine data summed with the tone generator's constant.)
+`scripts/iqtest.py` now does it in `Esp.key()`: `start_tx_tone_step(1, 0, g, ...)`, grant bank 2 (`0x600C101C = 4`), then `0x60006040 &= ~(1 << 18)`.
+
+Phase A acceptance table (LO 2350 MHz, gain code 70, amplitude 450/511, rate bit 1 = 80 Msps, Pluto at 30.72 Msps, about 50 cm):
+
+| Test | Expected (reported) | Measured |
+|---|---|---|
+| complex tone +5 MHz | line at LO+5 MHz (+13 kHz crystal offset) | **+5.0137 MHz, +69.6 dB**; opposite sideband -4.9875 MHz at +34.4 dB (35 dB down) |
+| complex tone -5 MHz (sign of the rotation) | line at LO-5 MHz | -4.9875 MHz, +68.5 dB; image at +5.0137 MHz +34.4 dB |
+| complex tone +10 MHz | line at LO+10 MHz | +10.0125 MHz, +69.7 dB; image +39.6 dB (30 dB down) |
+| rate bit 0 (40 Msps), buffer made for 40 Msps | 2x the cycles per buffer, same buffer time x2 | 1220 triggers per 250 ms (half), line at the expected frequency |
+| real cosine 5 MHz in I only | both +5 and -5 MHz | +66.8 dB and +65.7 dB |
+| constant word I = A | carrier at the LO from the DC offset | +72.5 dB at LO+11 kHz |
+| bank 0 granted instead of bank 2 | no line at the commanded frequency | none (broadband junk from the old content of bank 0 instead) |
+| harmonics | | -15 MHz at +38.7 dB for the +5 MHz tone (third harmonic, 31 dB below the line) |
+
+Reported by the original author and now reproduced on a second, different board (dev kit, chip revision v0.2): tone level +57..71 dB over the noise, opposite sideband 44 to 54 dB down
+(ours 30 to 35 dB: image rejection is worse here, not yet investigated), the 5 MHz-per-80 Msps scaling, the sign behaviour, the bank grant. Not yet repeated with a second receiver (HackRF).
