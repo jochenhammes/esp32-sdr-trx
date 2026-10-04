@@ -716,6 +716,8 @@ uint32_t radio_tx_run(void)
 #ifdef ESPDR_IQTEST
 /* ---- research: DAC playback engine tests (protocol/iqtest.h) ---------------------------------- */
 #include "iqtest.h"
+#include "hal/dma_types.h"
+#include "hal/gdma_ll.h"
 
 extern void phy_txtone_start(int mhz, int offset, int power);
 extern int txtone_linear_pwr(void);
@@ -891,41 +893,6 @@ static uint32_t iq_stream(unsigned amp)
     return (late > 0xFFFF ? 0xFFFFu : late) << 16 | (buffers > 0xFFFF ? 0xFFFFu : buffers);
 }
 
-static uint32_t iq_bench(unsigned mode_arg)
-{
-    volatile uint32_t *bank2 = (volatile uint32_t *)IQ_BANK2;
-    const unsigned mode = mode_arg & 3;
-    const bool unrolled = mode_arg & 4;
-    uint32_t phase = 0;
-    const uint32_t base = mode == 2 ? (16383u | (1u << 15)) : 16383u;
-    iq_build_lut(100);
-    if (mode >= 1) {
-        REG(IQ_DAC_REG) = base;
-        REG(IQ_DAC_REG) = base | (1u << 31);
-    }
-    uint32_t t = cpu_cycles(), written;
-    if (mode == 3) {
-        written = 0;
-    } else {
-        if (unrolled)
-            for (unsigned w = 0; w < IQ_WORDS; w += 256)
-                phase = iq_write_256(bank2 + w, phase, 0x08000000u);
-        else
-            for (unsigned w = 0; w < IQ_WORDS; w++) {
-                bank2[w] = iq_lut[phase >> 22];
-                phase += 0x08000000u;
-            }
-        written = cpu_cycles() - t;
-    }
-    if (mode >= 1) {
-        while (!(REG(IQ_DAC_REG) & (1u << 18)))
-            ;
-        REG(IQ_DAC_REG) = 0;
-    }
-    return mode == 3 ? cpu_cycles() - t : written; /* the time of the write loop only (not the wait for the engine) */
-}
-
-
 static uint32_t iq_stream_check(void)
 {
     volatile uint32_t *bank2 = (volatile uint32_t *)IQ_BANK2;
@@ -985,6 +952,85 @@ static uint32_t iq_wcheck(unsigned playing)
         REG(IQ_DAC_REG) = 0;
     }
     return iq_stream_check();
+}
+
+
+/* ---- E2: refill bank 2 with the GDMA memory-to-memory channel while the engine reads it ---- */
+#define IQ_BANK1 0x3FCC0000u
+#define IQ_DESC_BASE 0x3FCB1000u /* descriptors: bank 0, behind the 4 KiB lookup table */
+#define IQ_DESC_BYTES 2048u
+static uint32_t iq_gdma_cycles;
+
+static uint32_t iq_gdma(unsigned arg)
+{
+    const bool playing = arg & 1, burst = arg & 2;
+    volatile uint32_t *bank1 = (volatile uint32_t *)IQ_BANK1, *bank2 = (volatile uint32_t *)IQ_BANK2;
+    gdma_dev_t *dev = GDMA_LL_GET_HW(0);
+    uint32_t phase = 0;
+    iq_build_lut(150);
+    for (unsigned w = 0; w < IQ_WORDS; w += 256) /* the source */
+        phase = iq_write_256(bank1 + w, phase, iq.st_inc);
+    for (unsigned w = 0; w < IQ_WORDS; w++) /* the destination: zeros, so that a missing copy shows */
+        bank2[w] = 0;
+    const unsigned n = IQ_WORDS * 4 / IQ_DESC_BYTES;
+    dma_descriptor_t *tx = (dma_descriptor_t *)IQ_DESC_BASE, *rx = tx + n;
+    for (unsigned i = 0; i < n; i++) {
+        tx[i].dw0.size = IQ_DESC_BYTES;
+        tx[i].dw0.length = IQ_DESC_BYTES;
+        tx[i].dw0.err_eof = 0;
+        tx[i].dw0.suc_eof = i == n - 1;
+        tx[i].dw0.owner = 1;
+        tx[i].buffer = (void *)(IQ_BANK1 + i * IQ_DESC_BYTES);
+        tx[i].next = i == n - 1 ? NULL : &tx[i + 1];
+        rx[i].dw0.size = IQ_DESC_BYTES;
+        rx[i].dw0.length = 0;
+        rx[i].dw0.err_eof = 0;
+        rx[i].dw0.suc_eof = 0;
+        rx[i].dw0.owner = 1;
+        rx[i].buffer = (void *)(IQ_BANK2 + i * IQ_DESC_BYTES);
+        rx[i].next = i == n - 1 ? NULL : &rx[i + 1];
+    }
+    periph_ll_enable_clk_clear_rst(PERIPH_GDMA_MODULE);
+    gdma_ll_force_enable_reg_clock(dev, true);
+    gdma_ll_tx_reset_channel(dev, 0);
+    gdma_ll_rx_reset_channel(dev, 0);
+    gdma_ll_tx_connect_to_periph(dev, 0, GDMA_TRIG_PERIPH_M2M, 0);
+    gdma_ll_rx_connect_to_periph(dev, 0, GDMA_TRIG_PERIPH_M2M, 0);
+    gdma_ll_tx_enable_owner_check(dev, 0, false);
+    gdma_ll_rx_enable_owner_check(dev, 0, false);
+    gdma_ll_tx_enable_data_burst(dev, 0, burst);
+    gdma_ll_rx_enable_data_burst(dev, 0, burst);
+    if (burst) {
+        gdma_ll_tx_set_burst_size(dev, 0, 32);
+        gdma_ll_rx_set_burst_size(dev, 0, 32);
+    }
+    gdma_ll_rx_clear_interrupt_status(dev, 0, GDMA_LL_RX_EVENT_MASK);
+    gdma_ll_tx_clear_interrupt_status(dev, 0, GDMA_LL_TX_EVENT_MASK);
+    gdma_ll_rx_set_desc_addr(dev, 0, (uint32_t)rx);
+    gdma_ll_tx_set_desc_addr(dev, 0, (uint32_t)tx);
+    gdma_ll_rx_start(dev, 0);
+    if (playing) {
+        REG(IQ_DAC_REG) = 16383u;
+        REG(IQ_DAC_REG) = 16383u | (1u << 31);
+    }
+    uint32_t t = cpu_cycles();
+    gdma_ll_tx_start(dev, 0);
+    while (!(gdma_ll_rx_get_interrupt_status(dev, 0, true) & GDMA_LL_EVENT_RX_SUC_EOF) && cpu_cycles() - t < 20u * 240000u)
+        ;
+    iq_gdma_cycles = cpu_cycles() - t;
+    if (playing) {
+        while (!(REG(IQ_DAC_REG) & (1u << 18)))
+            ;
+        REG(IQ_DAC_REG) = 0;
+    }
+    uint32_t bad = 0, first = 0xFFFF;
+    for (unsigned w = 0; w < IQ_WORDS; w++)
+        if (bank2[w] != bank1[w]) {
+            if (!bad)
+                first = w;
+            bad++;
+        }
+    return (first << 16) | (bad > 0xFFFF ? 0xFFFFu : bad);
 }
 
 static uint32_t iq_play(uint32_t bits)
@@ -1079,14 +1125,17 @@ unsigned radio_iq_op(unsigned op, uint32_t arg, uint32_t *value)
     case IQ_OP_STREAM_INC2:
         iq.st_inc2 = arg;
         return CTL_OK;
+    case IQ_OP_GDMA:
+        *value = iq_gdma(arg & 3);
+        return CTL_OK;
+    case IQ_OP_GDMA_TIME:
+        *value = iq_gdma_cycles;
+        return CTL_OK;
     case IQ_OP_WCHECK:
         *value = iq_wcheck(arg & 3);
         return CTL_OK;
     case IQ_OP_STREAM_CHECK:
         *value = iq_stream_check();
-        return CTL_OK;
-    case IQ_OP_BENCH:
-        *value = iq_bench(arg & 7);
         return CTL_OK;
     case IQ_OP_STREAM:
         if (arg < 1 || arg > 255)

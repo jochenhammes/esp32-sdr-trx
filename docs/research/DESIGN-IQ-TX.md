@@ -90,3 +90,27 @@ nearly independent of the pause compensation) come from these wrong words, not f
 * Not tried yet, in the order of effort: (1) copy with the GDMA memory-to-memory channel instead of CPU stores, in case the DMA master is not hit by the problem; (2) write only the part of the bank the engine reads *later* with a larger distance than 64 words (perhaps the errors are tied to a read-ahead of the engine; the evenly spread errors argue against it); (3) a readback-and-repair pass (reads may be reliable);
   (4) the other three banks cannot be used as the playback source (the engine reads bank 2 only).
 * What Design A already gives for the product: carriers and tones at any offset from the LO, two-tone and chirp test signals, modulated bursts of at most 204.8 us (one buffer), and the polar FM/SSB transmitter unchanged. A voice mode that beats the polar transmitter is not in reach with Design A alone.
+
+## E2 result: the GDMA memory-to-memory channel does not help (2026-10-04)
+
+Research build op `IQ_OP_GDMA`: a tone is written to bank 1 by the CPU (no engine involved, always clean), then copied to bank 2 (zeroed beforehand) by GDMA channel 0 in memory-to-memory mode (32 descriptors of 2048 bytes in each direction),
+with the engine idle or playing at 40 Msps, and bank 2 is compared word by word with bank 1 afterwards.
+
+| Copy | Engine | Different words of 16384 | Time for 64 KiB |
+|---|---|---|---|
+| GDMA | idle | 2 (the last two words: the end of the descriptor chain) | 1238 us (18.1 CPU cycles per word) |
+| GDMA, burst 32 | idle | 2 | 1033 us (15.1 cycles per word) |
+| GDMA | playing | **15507** (from word 0) | 1238 us |
+| GDMA, burst 32 | playing | **15114** (from word 0) | 1033 us |
+
+Two independent reasons against it: the channel is far too slow (more than 1 ms for a buffer that plays for 0.41 ms at 40 Msps and 0.2 ms at 80 Msps), and while the engine reads the bank almost nothing arrives correctly (worse than the CPU, where 4 to 12 % of the words are wrong).
+So **neither master can refill a bank that the engine is reading**; the CPU is good enough in speed and wrong in 4 to 12 % of the words, the DMA is the opposite of what we need.
+
+**Decision for the product.** Design B is dropped (until somebody finds why bank 2 does not take writes during playback; hypothesis: the engine's read port takes the SRAM exclusively for the duration of a trigger and other masters get through only in gaps).
+The product uses **Design A**: one buffer, changed only between bursts, re-triggered with the pause compensation. Concretely:
+
+* `TX_MODE_IQ` carries static or burst content: a carrier or tone at an offset from the LO, two-tone and chirp test signals, and short modulated bursts (at most 204.8 us at 80 Msps, 409.6 us at 40 Msps) with gaps in between that are as short as the buffer rewrite
+  (the CPU needs about 90 us for 16384 words).
+* Voice and any continuous narrowband modulation stay with the polar transmitter (FM/SSB), whose image and IM3 numbers are known.
+* The I/Q engine is a feature of the research branch and of a possible later `espdr-tx --mode iq-burst`; before that the harmonics at the real operating level, the burst gap and a calibration command for the I/Q correction (g, p) must be done.
+* Open question for the original author or anyone who finds out: does a trigger allow the CPU to write into the bank at all? (try: write into the bank with the grant to bank 2 removed and put back before the trigger; the engine reads only while the grant is set.)
