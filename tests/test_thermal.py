@@ -65,6 +65,6 @@ def test_the_chip_temperature_comes_through_the_simulated_link():
 
 def test_a_simulated_session_with_the_correction_plays_and_ends(tmp_path):
     import io
-    args = cli_tx.build_parser().parse_args(["-f", "2350", "-m", "fm", "--test-tone", "1000", "--duration", "1", "--thermal", "nominal", "-q", "--dry-run"])
+    args = cli_tx.build_parser().parse_args(["-f", "2350", "-m", "fm", "--test-tone", "1000", "--duration", "1", "--thermal", "nominal", "-q", "--dry-run", "--accept-licence"])
     out = io.StringIO()
     assert cli_tx.run(args, out) == 0
