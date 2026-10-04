@@ -123,7 +123,7 @@ Phase A acceptance table (LO 2350 MHz, gain code 70, amplitude 450/511, rate bit
 | complex tone +5 MHz | line at LO+5 MHz (+13 kHz crystal offset) | **+5.0137 MHz, +69.6 dB**; opposite sideband -4.9875 MHz at +34.4 dB (35 dB down) |
 | complex tone -5 MHz (sign of the rotation) | line at LO-5 MHz | -4.9875 MHz, +68.5 dB; image at +5.0137 MHz +34.4 dB |
 | complex tone +10 MHz | line at LO+10 MHz | +10.0125 MHz, +69.7 dB; image +39.6 dB (30 dB down) |
-| rate bit 0 (40 Msps), buffer made for 40 Msps | 2x the cycles per buffer, same buffer time x2 | 1220 triggers per 250 ms (half), line at the expected frequency |
+| rate bit 0 (40 Msps), same buffer as for 5 MHz at 80 Msps | line at 2.5 MHz ("clearing bit 15 halves every frequency") | **+2.513 MHz, +76 dB** (image -2.486 MHz +44 dB); half as many triggers (1220 per 250 ms) |
 | real cosine 5 MHz in I only | both +5 and -5 MHz | +66.8 dB and +65.7 dB |
 | constant word I = A | carrier at the LO from the DC offset | +72.5 dB at LO+11 kHz |
 | bank 0 granted instead of bank 2 | no line at the commanded frequency | none (broadband junk from the old content of bank 0 instead) |
@@ -131,3 +131,16 @@ Phase A acceptance table (LO 2350 MHz, gain code 70, amplitude 450/511, rate bit
 
 Reported by the original author and now reproduced on a second, different board (dev kit, chip revision v0.2): tone level +57..71 dB over the noise, opposite sideband 44 to 54 dB down
 (ours 30 to 35 dB: image rejection is worse here, not yet investigated), the 5 MHz-per-80 Msps scaling, the sign behaviour, the bank grant. Not yet repeated with a second receiver (HackRF).
+
+### Larger offsets (same session, LO 2350 MHz, Pluto re-centred each time)
+
+| Tone (complex, 80 Msps, amplitude 450) | Line over the noise |
+|---|---|
+| +5 MHz | +69 dB |
+| +20 MHz / -20 MHz | +44 dB / +40 dB |
+| +35 MHz / -35 MHz | +14 dB / +10 dB |
+| real cosine 35 MHz | +8 dB at +35 MHz, +5 dB at -35 MHz |
+
+So the output is not flat to +-35 MHz on this board: about -25 dB at 20 MHz and -55 dB at 35 MHz against 5 MHz (the original report has +57 to +71 dB at all of
+2.5, 5, 10, 20 and 35 MHz). The channel-width setting (`0x60006100` bits 21:16 and `0x6002600C` bits 3:2 set to the 40 MHz values) does not change it. Open for Phase B: which
+filter limits it (digital or analog TX baseband filter), whether it can be widened, and whether the original board had a different setting.

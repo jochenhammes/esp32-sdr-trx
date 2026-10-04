@@ -177,10 +177,10 @@ class Esp:
 
 # ----------------------------------------------------------------------------------------------------------------- cases
 def run_case(esp, pluto, lo_hz, tone_hz, args, mode=MODE_ROTATOR, rate80=True, bank=4, amp=None, hold=False, keyed=True, label="", extra=0,
-             center_off=None):
+             center_off=None, fill_rate=None):
     """Plays one buffer pattern and measures it. Returns a dict."""
     amp = args.amp if amp is None else amp
-    actual = esp.fill(tone_hz, 80 if rate80 else 40, amp, mode) if mode in (MODE_ROTATOR, MODE_REAL) else (esp.fill(0, 80, amp, mode) and 0)
+    actual = esp.fill(tone_hz, fill_rate or (80 if rate80 else 40), amp, mode) if mode in (MODE_ROTATOR, MODE_REAL) else (esp.fill(0, 80, amp, mode) and 0)
     off = args.center_off if center_off is None else center_off
     center = lo_hz + off
     pluto.tune(center, args.fs, args.pluto_gain)
