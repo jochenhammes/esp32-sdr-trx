@@ -72,3 +72,28 @@ is visible at the antenna (limit about -50 dBc from the narrow high-gain search)
 the mixer input, or the received power is limited by something that this board does not provide (see the open differences above).
 
 Mistake recorded: granting bank 3 (`0x600C101C` bit 3) crashed the chip, as the report warns (it hung with the chain keyed until a hard reset). The IQTEST firmware now masks bit 3 of every bank grant.
+
+## Addendum 2: what the sensor is, and the analog chain does not matter (2026-10-04)
+
+`txtone_linear_pwr()` loops twice over `get_tone_sar_dout()` and `get_sar_sig_ref()` and returns the sum of (tone reading / reference reading) << 10: it is the TX power
+detector's SAR ADC, so the sensor looks at the analog transmit output (relative to a reference), not at a digital register.
+
+Clean single-register sweep (fresh PLL, keying and buffer for every value; I = Q = 500 constant buffer; reading = idle vs engine triggered):
+
+| Change | Idle reading | Ratio playing/idle |
+|---|---|---|
+| baseline (g=70) | 36 800 | 0.803 |
+| PBUS (4,1) = 255 / 64 | 36 500 / 0 | 0.802 / carrier off |
+| PBUS (4,2) = 0 / 1 / 64 / 127 | 36 700 / 36 300 / 36 500 / 230 | 0.802 / 0.803 / 0.812 / carrier off |
+| PBUS (4,3) = 0 / 1 / 64 / 127 | 0 / 0 / 0 / 260 | carrier off |
+| PBUS (5,1) = 1 / 64 / 127 / 255 | 205 / 750 / **178 500** / 176 300 | 0.93 / 0.87 / 0.813 / 0.810 |
+| PBUS (5,2) = 1 .. 255 | 35 700 .. 35 900 | 0.795 .. 0.805 |
+| PBUS (5,3) = 1 / 64 / 127 / 255 | 196 / 804 / 175 500 / 174 100 | 1.06 / 0.83 / 0.809 / 0.808 |
+| `tx_state_set(0..3)` register writes (`0x600060B0..BC`) | 36 100 .. 36 900 | 0.803 .. 0.812 |
+
+The analog settings move the carrier by a factor of five (and switch it off), but the engine's effect stays at x0.80 whenever there is a carrier. A change that is the same
+for every analog gain happens before the analog stages: most likely in the digital stage where the tone generator and the engine data meet (saturation or a shared multiplier),
+not in a signal path to the mixer. PBUS (4,1), (4,2), (4,3), (5,1), (5,3) are the carrier's on/off and level controls; (4,0), (5,0) refuse writes.
+
+Status after this round: the engine runs, is gated by the bank grant, affects the transmit chain at a digital level, and produces no sideband at the antenna. Not tried: the BB TX state
+registers beyond `tx_state_set`, `0x60033D84` (touched by `tx_a_frame`), anything that needs h0m3us3r's initialisation.
