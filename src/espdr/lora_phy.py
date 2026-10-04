@@ -432,7 +432,10 @@ def demodulate_all(iq, fs, sf, bw, preamble=8, sync_word=0x34, max_frames=1000, 
     N = 1 << sf
     seg = iq
     while len(out) < max_frames and len(seg) > 12 * N * os_:
-        r = demodulate(seg, fs, sf, bw, preamble=preamble, sync_word=sync_word, **kw)
+        try:
+            r = demodulate(seg, fs, sf, bw, preamble=preamble, sync_word=sync_word, **kw)
+        except ValueError:                      # a preamble at the very end of the recording: no complete frame
+            break
         if r is None:
             break
         end = r.get("end") or (r["start"] + 8 * N * os_)
@@ -458,3 +461,19 @@ def coarse_centre(iq, fs, bw, nper=4096):
     f, p = f[o], p[o]
     m = p > 0.05 * p.max()
     return float((f[m].min() + f[m].max()) / 2)
+
+
+def search_centre(iq, fs, bw, sf, expect, span=100e3, step=None, **kw):
+    """Decode a recording whose centre is only roughly known: try shifts in steps of bw / 2.5 (the receiver tolerates bw / 4 either side) over +-span and keep the one
+    with the most frames that equal `expect`. Returns (frames of the best shift, the shift in Hz, number of good frames)."""
+    step = step or bw / 2.5
+    t = np.arange(len(iq)) / fs
+    x = np.asarray(iq) - np.mean(iq)
+    best = ([], 0.0, -1)
+    for c in np.arange(-span, span + 1, step):
+        y = (x * np.exp(-2j * np.pi * c * t)).astype(np.complex64)
+        fr = demodulate_all(y, fs, sf, bw, **kw)
+        good = sum(1 for f in fr if f.get("crc_ok") and f.get("payload") == expect)
+        if good > best[2]:
+            best = (fr, float(c), good)
+    return best

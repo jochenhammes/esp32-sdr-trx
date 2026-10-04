@@ -161,7 +161,41 @@ So the statement for scheme W is: **it works at all SX1280 bandwidths I tried an
 numpy receiver (not a standard LoRa chip: SF5 and BW 4 or 8 MHz are not LoRa bandwidths) decodes 1 dB from the ideal; frames up to 1 ms at a real SX1280 bandwidth (1.625 MHz) can be written symbol by symbol but lose about 6 dB; and narrow LoRa (62.5 kHz, SF5 to SF10) goes through the ordinary polar transmitter with a receiver that follows the board's drift.
 Not tested: any real LoRa chip as receiver, the ESP32's own receiver on narrow LoRa (needs a second transmitter at 13 cm), and other boards.
 
-## State (17:35)
+## Cross-checks with pluto-tx's decoder, and the ESP32 receiving (2026-10-04, evening; the Pluto cleared for transmitting until 23:00)
 
-L0a, L0b, L1 (three variants), L2 and L3 are done; L4 is the table above. Open: the ESP32 receiving narrow LoRa, a real SX128x as the receiver (the only way to check the SF5 and SF6 rules and the 1.625 MHz frame against the standard),
+The MeshCore functions of pluto-tx were tested there against real LoRa hardware (Heltec V3, SX1262), so its receive chain (`pluto_advanced_rx.lora_rx.LoraRxDecoder`, gr-lora_sdr) is the nearest thing to a standard decoder that is on this machine. Two checks, both with the numpy PHY of this branch
+(`src/espdr/lora_phy.py`) as the encoder; tools `scripts/lora_iq/grcheck.py` (any saved capture through gr-lora_sdr) and `scripts/lora_iq/esp_rx.py` (PlutoSDR transmits, the ESP32 receives).
+
+**1. Frames sent by the ESP32 (scheme P, narrow LoRa, captured by the Pluto) through the decoder of pluto-tx.**
+
+| SF, BW 62.5 kHz | numpy receiver | gr-lora_sdr (no drift following) |
+|---|---|---|
+| 7 | 6 / 6 | 6 / 6 |
+| 8 | 8 / 8 | 8 / 8 |
+| 9 | 6 / 6 | 1 / 6 (the other frames have single wrong symbols: the carrier drifts during the frame) |
+| 10 | 6 / 6 | 0 / 5 |
+
+So the frames are LoRa frames in the sense of the decoder that works against a Heltec V3; where they fail it is the board's drift that the standard receiver does not follow, as predicted in the L3 section.
+
+**2. The ESP32's own receiver (`espdr-rx`, rtl_tcp bridge, 250 ksps, 8 bit) on narrow LoRa sent by the PlutoSDR** (TX at 2350.0 MHz with the frame 60 kHz above the LO, repeated every 0.5 to 1 s; Pluto TX attenuation -32 dB; ESP32 gain 20 to 40 dB; the board's crystal puts the signal about 10 kHz
+off, so the receiver searches the centre in steps of bw/2.5 first):
+
+| SF, BW 62.5 kHz | numpy receiver | gr-lora_sdr |
+|---|---|---|
+| 7 | 11 / 11 | 11 / 11 |
+| 8 | 17 / 17 | 17 / 17 |
+| 9 | 17 / 17 | 17 / 17 |
+| 10 | 8 / 9 | 0 / 9 |
+
+**Yes: the ESP32 receives narrow LoRa**, bit-exact, with both decoders (the Pluto's frames are stable, so SF9 works here where it failed on the ESP32's own carrier). Too much level overloads the 8-bit receiver: at Pluto attenuation -25 dB and gain 30 dB the recording showed a constant tone for 100 ms and
+distorted chirps, and nothing decoded; the first gain settings that worked were 20 dB (attenuation -32 dB) and 40 dB (attenuation -38 .. -54 dB).
+
+**Sensitivity of the ESP32 receiver** (SF7, BW 62.5 kHz, gain 40 dB, 20 frames per step): all frames decode down to a Pluto attenuation of -50 dB (21 of 21 in three runs); at -54 dB the results were 4 of 20 and 22 of 22 in two runs (the edge); at -58 dB and below nothing decodes. The absolute power at the ESP32 was
+not calibrated (the Pluto's own receiver could not see these levels, see below), so this is a relative threshold only.
+
+COMPARISON_PLACEHOLDER
+
+## State (evening)
+
+L0a, L0b, L1 (three variants), L2 and L3 are done; L4 is the table above. Open: a real SX128x (or SX126x for narrow LoRa) as the receiver (the only way to check the SF5 and SF6 rules and the 1.625 MHz frame against the standard),
 better synchronisation on truncated symbols, and merging the research ops into `main` if wanted (`TX_OP_RANGE`, `-m lora`, `lora_phy.py` are product-side code on this branch; the `IQ_OP_*` ops are research-only).
