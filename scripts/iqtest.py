@@ -71,6 +71,30 @@ class Pluto:
         return x - 0  # keep Pluto's own DC; the analysis looks at offsets away from it
 
 
+class HackRF:
+    """Second receiver for the verification rule: same interface as Pluto (tune, capture), through hackrf_transfer (8-bit I/Q)."""
+
+    def __init__(self, lna=24, vga=20, amp=0):
+        self.lna, self.vga, self.amp = lna, vga, amp
+        self.fs = None
+
+    def tune(self, center_hz, fs, gain_db):
+        self.center, self.fs = center_hz, fs
+
+    def capture(self, n):
+        import subprocess, tempfile, os
+        path = tempfile.mktemp(prefix="hackrf_", suffix=".bin")
+        try:
+            subprocess.run(["hackrf_transfer", "-r", path, "-f", str(int(self.center)), "-s", str(int(self.fs)), "-n", str(int(n)),
+                            "-l", str(self.lna), "-g", str(self.vga), "-a", str(self.amp)], check=True, capture_output=True)
+            raw = np.fromfile(path, dtype=np.int8).astype(np.float32)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+        x = raw[0::2] + 1j * raw[1::2]
+        return x * 16.0     # same scale as the Pluto's 12-bit samples, so that the clip figure (peak / 2048) is comparable
+
+
 def spectrum(x, fs, nper=8192):
     from scipy.signal import welch
     f, p = welch(x, fs, nperseg=nper, return_onesided=False, detrend=False, window="hann")

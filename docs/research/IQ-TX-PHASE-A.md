@@ -130,7 +130,7 @@ Phase A acceptance table (LO 2350 MHz, gain code 70, amplitude 450/511, rate bit
 | harmonics | | -15 MHz at +38.7 dB for the +5 MHz tone (third harmonic, 31 dB below the line) |
 
 Reported by the original author and now reproduced on a second, different board (dev kit, chip revision v0.2): tone level +57..71 dB over the noise, opposite sideband 44 to 54 dB down
-(ours 30 to 35 dB: image rejection is worse here, not yet investigated), the 5 MHz-per-80 Msps scaling, the sign behaviour, the bank grant. Not yet repeated with a second receiver (HackRF).
+(ours 30 to 35 dB: image rejection is worse here, not yet investigated), the 5 MHz-per-80 Msps scaling, the sign behaviour, the bank grant. Repeated with a second receiver (HackRF One), see below.
 
 ### Larger offsets (same session, LO 2350 MHz, Pluto re-centred each time)
 
@@ -144,3 +144,17 @@ Reported by the original author and now reproduced on a second, different board 
 So the output is not flat to +-35 MHz on this board: about -25 dB at 20 MHz and -55 dB at 35 MHz against 5 MHz (the original report has +57 to +71 dB at all of
 2.5, 5, 10, 20 and 35 MHz). The channel-width setting (`0x60006100` bits 21:16 and `0x6002600C` bits 3:2 set to the 40 MHz values) does not change it. Open for Phase B: which
 filter limits it (digital or analog TX baseband filter), whether it can be widened, and whether the original board had a different setting.
+
+### Second receiver: HackRF One (same day, LO 2350 MHz, gain code 70, amplitude 450/511, 20 Msps, LNA 16 dB / VGA 16 dB, about 50 cm)
+
+| Test | HackRF result |
+|---|---|
+| complex +5 MHz | line at +5.0142 MHz, **+61.6 dB**; image at -4.988 MHz +27 dB (34 dB down) |
+| complex -5 MHz | line at -4.9897 MHz, +61.0 dB; image +23.8 dB |
+| complex +10 MHz / -10 MHz | +10.0103 MHz +61.0 dB / -9.9858 MHz +61.1 dB |
+| same 5 MHz buffer, rate bit 0 | line at +2.514 MHz, +64 dB (image -2.488 MHz +35 dB) |
+
+(The line at the centre of each capture, e.g. at -2.000 MHz, is the HackRF's own DC spike.) Frequencies, signs, the rate bit and the level agree with the PlutoSDR
+measurements, so the verification rule of PLAN-IQ-TX.md ("repeated with the HackRF") is met for the engine itself: **reproduced on two receivers**. Still open from
+the plan: Phase B characterisation (roll-off beyond 10 MHz, image rejection, gain dependence, IM3, seam, phase noise), and the +-35 MHz case which needs the Pluto's
+re-centring (the HackRF covers +-10 MHz).
