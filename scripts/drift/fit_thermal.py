@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fit the thermal drift model (espdr.thermal) to measured carriers, also to transmissions that were already corrected (their correction is added back).
 
-usage: fit_thermal.py OUT_MODEL.json  ab1.json[@MODEL_USED.json] [ab2.json ...] [--series drift-series.json] [--per-run-offset] [--fixed k=19.1,t0=47.7]
+usage: fit_thermal.py [--skip NAME_PART ...] OUT_MODEL.json  ab1.json[@MODEL_USED.json] [ab2.json ...] [--series drift-series.json] [--per-run-offset] [--fixed k=19.1,t0=47.7]
        fit_thermal.py --eval MODEL.json  ab1.json ... [--series ...]      (no fit: the residuals of a model, with the offset it contains)
 A recording made with --thermal needs the model that was in use then (FILE@MODEL.json, a JSON of espdr.thermal.DEFAULT names; default: the current one).
 Prints the parameters and, for every transmission, the residual before and after the fit.
@@ -16,9 +16,10 @@ sys.path.insert(0, __file__.rsplit("/", 3)[0] + "/src")
 from espdr import thermal  # noqa: E402
 
 NOMINAL = {"usb": 101000.0, "rtty": 102222.0, "fm": 100000.0}
-NAMES = ["k", "t0", "t_inf", "tau_chip", "tau_xtal", "early_hz", "early_tau"]          # plus one offset c_<mode> per kind of transmission (fm, usb, rtty)
-START = dict(k=19.1, t0=47.7, t_inf=56.0, tau_chip=37.0, tau_xtal=6.0, early_hz=0.0, early_tau=10.0)
-BOUNDS = dict(k=(0, 60), t0=(38, 60), t_inf=(50, 58), tau_chip=(5, 300), tau_xtal=(0.5, 120), early_hz=(-1500, 1500), early_tau=(1, 120))
+NAMES = ["k", "k3", "t0", "t_inf", "tau_chip", "tau_xtal", "early_hz", "early_tau"]          # plus one offset c_<mode> per kind of transmission (fm, usb, rtty)
+START = dict(k=19.1, k3=0.0, t0=47.7, t_inf=56.0, tau_chip=37.0, tau_xtal=6.0, early_hz=0.0, early_tau=10.0)
+STARTS = [dict(t0=47.0, early_hz=0.0), dict(t0=44.0, early_hz=3500.0, early_tau=11.0), dict(t0=40.0, early_hz=3000.0), dict(t0=35.0, early_hz=-3000.0)]       # starting points tried (the fit is not convex)
+BOUNDS = dict(k=(0, 150), k3=(-3, 3), t0=(25, 60), t_inf=(50, 58), tau_chip=(5, 300), tau_xtal=(0.5, 120), early_hz=(-8000, 8000), early_tau=(1, 200))
 
 
 def runs_ab(d, used_params):
@@ -70,11 +71,13 @@ def main():
         out = None
     else:
         out = argv.pop(0)
-    series, files, per_run, fixed = [], [], False, {}
+    series, files, per_run, fixed, skip = [], [], False, {}, []
     while argv:
         a = argv.pop(0)
         if a == "--series":
             series.append(argv.pop(0))
+        elif a == "--skip":
+            skip.append(argv.pop(0))
         elif a == "--per-run-offset":
             per_run = True
         elif a == "--fixed":
@@ -87,7 +90,7 @@ def main():
         runs += runs_ab(json.load(open(f)), thermal.load_params(used or None))
     for f in series:
         runs += runs_series(json.load(open(f)))
-    runs = [r for r in runs if len(r["t"]) > 4]
+    runs = [r for r in runs if len(r["t"]) > 4 and not any(x in r["name"] for x in skip)]
     # 1 s medians (equal weight for every second of every transmission)
     pts = []
     for r in runs:
@@ -127,11 +130,12 @@ def main():
         return np.concatenate([r["f"] - model(p, r) - (x[len(free) + i] if per_run else 0.0) for i, r in enumerate(pts)])
 
     best = None
-    for k0 in (10.0, 25.0):
-        for tx0 in (4.0, 20.0):
+    for st in STARTS:
+        for k0 in (10.0, 40.0):
             xs = list(x0)
-            xs[free.index("k")] = k0
-            xs[free.index("tau_xtal")] = tx0 if "tau_xtal" in free else xs[free.index("tau_xtal")] if False else tx0
+            for name, v in dict(st, k=k0).items():
+                if name in free:
+                    xs[free.index(name)] = v
             sol = least_squares(resid, np.clip(xs, lo, hi), bounds=(lo, hi))
             if best is None or sol.cost < best.cost:
                 best = sol

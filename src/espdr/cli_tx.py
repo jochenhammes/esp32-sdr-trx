@@ -107,10 +107,12 @@ def build_parser():
     run = p.add_argument_group("session")
     run.add_argument("--duration", type=float, metavar="SECONDS", help="stop after this many seconds (default: until the source ends)")
     run.add_argument("--update-rate", type=int, default=40000, metavar="HZ", help="records per second sent to the chip, 8000 .. 40000 (default 40000)")
-    run.add_argument("--thermal", choices=("off", "sensor", "nominal"), default="off",
-                     help="cancel the carrier's thermal drift with a model: 'sensor' reads the chip's temperature first, 'nominal' assumes the idle temperature "
-                          "of the chip (no sensor reading); the model is that of the board it was measured on (default off)")
-    run.add_argument("--thermal-model", metavar="FILE", help="JSON file with the thermal model's numbers of this board (see espdr.thermal.DEFAULT)")
+    run.add_argument("--thermal", choices=("auto", "off", "sensor", "nominal"), default="auto",
+                     help="cancel the carrier's thermal drift with a model of the board: 'sensor' reads the chip's temperature first, 'nominal' assumes its idle "
+                          "temperature, 'auto' (default) is 'sensor' if the board has a model file (thermal-SERIAL.json, SERIAL being that of its USB-UART bridge, or thermal.json "
+                          "in the configuration directory, or --thermal-model) and 'off' otherwise")
+    run.add_argument("--thermal-model", metavar="FILE", help="JSON file with the thermal model's numbers of this board (see espdr.thermal.DEFAULT and scripts/drift/fit_thermal.py); "
+                                                              "without it 'sensor' and 'nominal' use the built-in numbers of the first tested board")
     run.add_argument("--drift", type=int, default=210, metavar="HZ",
                      help="thermal frequency drift to cancel at switch-on, measured on one board (default 210; 0 = off)")
     run.add_argument("--dry-run", action="store_true", help="show the settings and send nothing (the board is not touched)")
@@ -212,23 +214,58 @@ def _rtty_plan(args):
                 shift_real=shift_q4 * unit, miss_hz=low_real - low)
 
 
+def _model_names(args):
+    """The names of the thermal model files of the board, best first: thermal-<serial number of its USB-UART bridge>.json, then thermal.json.
+    (The native port reports the same serial number on every board while the firmware runs, the bridge's differs.) With several boards attached
+    the bridge must be named with --bridge-port."""
+    from serial.tools import list_ports
+    bridges = [p for p in list_ports.comports() if (p.vid, p.pid) in board.BRIDGES and p.serial_number]
+    if args.bridge_port:
+        bridges = [p for p in bridges if p.device == args.bridge_port]
+    return ([f"thermal-{bridges[0].serial_number}.json"] if len(bridges) == 1 else []) + ["thermal.json"]
+
+
+def _board_model(args):
+    for n in _model_names(args):
+        if (_config_dir() / n).exists():
+            return str(_config_dir() / n)
+    return None
+
+
+def _thermal(args, session, out):
+    """The drift correction for this transmission (espdr.thermal.Thermal) or None. 'auto' switches it on when the board has a model file."""
+    from . import thermal
+    mode, path = args.thermal, args.thermal_model
+    if mode == "auto":
+        path = path or _board_model(args)
+        if not path:
+            if args.verbose:
+                print(f"thermal drift correction is off: no model file for this board (looked for {' or '.join(_model_names(args))} in {_config_dir()})", file=out)
+            return None
+        mode = "sensor"
+    if mode == "off":
+        return None
+    try:
+        params = thermal.load_params(path)
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"espdr-tx: cannot read the thermal model {path}: {e}")
+    start_c = params["idle"]
+    if mode == "sensor":
+        try:
+            start_c = session.chip_temperature()
+        except (nb.CommandError, OSError) as e:
+            print(f"warning: the chip's temperature could not be read ({e}); assuming {start_c:g} C", file=out)
+    c = thermal.Thermal(start_c, args.update_rate, args.freq * 1e6, params)
+    peak = max(abs(c.correction_hz(int(args.update_rate * 150))))
+    print(f"thermal drift correction ({path or 'built-in model'}): chip {start_c:.1f} C {'(read)' if mode == 'sensor' else '(assumed)'}, "
+          f"up to {peak:.0f} Hz within 150 s", file=out)
+    return c
+
+
 def _transmit(args, out, mod, session, lo_hz, stop, interrupted, blocks, live, stream):
     """One transmission: configure and begin the chip, feed it, report. Returns (the chip's summary, ended by the user)."""
     import numpy as np
-    correct = None
-    if args.thermal != "off":
-        from . import thermal
-        params = thermal.load_params(args.thermal_model)
-        start_c = params["idle"]
-        if args.thermal == "sensor":
-            try:
-                start_c = session.chip_temperature()
-            except (nb.CommandError, OSError) as e:
-                print(f"warning: the chip's temperature could not be read ({e}); assuming {start_c:g} C", file=out)
-        correct = thermal.Thermal(start_c, args.update_rate, args.freq * 1e6, params)
-        peak = max(abs(correct.correction_hz(int(args.update_rate * 150))))
-        print(f"thermal drift correction: chip {start_c:.1f} C {'(read)' if args.thermal == 'sensor' else '(assumed)'}, "
-              f"up to {peak:.0f} Hz within 150 s", file=out)
+    correct = _thermal(args, session, out)
     session.configure(lo_hz, args.update_rate, drift_hz=args.drift, limit_s=3600)
     session.begin(expect_word=txlink.lo_word(lo_hz))
 

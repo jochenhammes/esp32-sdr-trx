@@ -16,6 +16,7 @@ REF_HZ = 2350e6                          # the frequency the parameters were mea
 DEFAULT = dict(
     t0=47.09,                             # turning point of the crystal, degrees C on the chip's sensor scale
     k=19.47,                              # Hz per degree^2 at 2350 MHz
+    k3=0.0,                               # Hz per degree^3 at 2350 MHz (the cubic term of an AT-cut crystal)
     t_inf=58.0,                          # temperature the chip heads to while it transmits
     tau_chip=137,                      # s, heating of the chip in a transmission
     tau_xtal=0.5,                       # s, the crystal follows the chip with this lag
@@ -46,7 +47,8 @@ def crystal_temperature(t, start_c, p):
 def error_hz(t, start_c, p, carrier_hz=REF_HZ):
     """The predicted frequency error (against the value at the turning point) at t seconds after the start, in Hz at the carrier frequency."""
     tx = crystal_temperature(t, start_c, p)
-    e = p["k"] * (tx - p["t0"]) ** 2
+    x = tx - p["t0"]
+    e = p["k"] * x ** 2 + p["k3"] * x ** 3
     if p["early_hz"]:
         scale = 1.0 if not p["early_cold_c"] else max(0.0, (p["idle"] - start_c) / p["early_cold_c"] + 1.0)
         e = e + p["early_hz"] * scale * (1.0 - np.exp(-t / p["early_tau"]))

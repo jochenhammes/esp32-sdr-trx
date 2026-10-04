@@ -68,3 +68,35 @@ def test_a_simulated_session_with_the_correction_plays_and_ends(tmp_path):
     args = cli_tx.build_parser().parse_args(["-f", "2350", "-m", "fm", "--test-tone", "1000", "--duration", "1", "--thermal", "nominal", "-q", "--dry-run", "--accept-licence"])
     out = io.StringIO()
     assert cli_tx.run(args, out) == 0
+
+
+class _FakeSession:
+    ser = type("S", (), {"port": "/dev/none"})()
+
+    def chip_temperature(self):
+        return 30.0
+
+
+def _args(*extra):
+    return cli_tx.build_parser().parse_args(["-f", "2350", "-m", "fm", "--test-tone", "1000", *extra])
+
+
+def test_auto_is_off_without_a_model_file_and_on_with_one(tmp_path, monkeypatch):
+    import io
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert _args().thermal == "auto"
+    assert cli_tx._thermal(_args(), _FakeSession(), io.StringIO()) is None
+    (tmp_path / "espdr").mkdir()
+    (tmp_path / "espdr" / "thermal.json").write_text(json.dumps({"k": 30.0, "t0": 40.0}))
+    out = io.StringIO()
+    c = cli_tx._thermal(_args(), _FakeSession(), out)
+    assert c is not None and c.p["k"] == 30.0 and c.start_c == 30.0 and "read" in out.getvalue()
+    assert cli_tx._thermal(_args("--thermal", "off"), _FakeSession(), io.StringIO()) is None
+
+
+def test_nominal_uses_the_idle_temperature_and_the_given_model(tmp_path):
+    import io
+    f = tmp_path / "m.json"
+    f.write_text(json.dumps({"idle": 35.0}))
+    c = cli_tx._thermal(_args("--thermal", "nominal", "--thermal-model", str(f)), _FakeSession(), io.StringIO())
+    assert c.start_c == 35.0
