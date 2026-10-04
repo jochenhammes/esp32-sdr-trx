@@ -8,7 +8,8 @@ that does not change who is responsible. Everything below was measured with a Pl
 
 ## In short
 
-No I/Q transmit input of the ESP32-S3 was found (the test-tone registers are not one, and a possible SRAM-fed path on other ESP32 chips is unexplored, see Stage 4), but its PHY library's test-tone mode gives a carrier that can be moved in **frequency** through the
+The ESP32-S3 does have a raw I/Q transmit input, an SRAM playback engine (Stage 6; found by h0m3us3r, reproduced here, see the notes at the end of Stage 6). It was not known when the transmitter was built,
+and the transmitter does not use it. What it uses instead: the PHY library's test-tone mode gives a carrier that can be moved in **frequency** through the
 RF PLL's sigma-delta word (459 Hz steps, 40 kHz updates) and in **amplitude** through a gain code (0.28 dB per step, 18 dB range, 20 kHz fast).
 Together that is polar modulation, and it carries:
 
@@ -421,6 +422,12 @@ Source: h0m3us3r, comment on eSpDR issue #3 (one ESP32-S3-WROOM-1, 40 MHz crysta
 They are listed here as the working hypothesis for our own tests and are marked "reproduced" in [PLAN-IQ-TX.md](PLAN-IQ-TX.md) only when we have measured them.**
 They also settle the question of this document: the S3 *does* have an I/Q transmit input. The Stage 3 conclusion about `0x60006040/44` stays correct (see below).
 
+> **Update (2026-10-04): reproduced here**, on a different board, with a PlutoSDR and a HackRF One. One step is missing in the report's recipe (and was confirmed by its author): after keying,
+> **clear bit 18 of `0x60006040`**, the enable bit of the tone generator; without it the engine's output is invisible at the antenna. Two further findings that matter for use: the TX baseband filter capacitor codes are
+> registers 12 and 13 of the analog block `0x67` (default `0x23` gives a drop of about 28 dB at 20 MHz and 56 dB at 35 MHz; 0 makes the response flat to +-35 MHz), and the opposite sideband (33 dB down) can be reduced to
+> 62 dB by pre-correcting the samples. All measurements and the research firmware are on the branch `research/iq-tx`:
+> [IQ-TX-PHASE-A.md](https://github.com/jochenhammes/esp32-sdr-trx/blob/research/iq-tx/docs/research/IQ-TX-PHASE-A.md). The product transmitter is unchanged.
+
 **The engine** is `0x60033D64`, the twin of the capture control `0x60033D5C`. Implemented bits: `0x8FF8BFFF`.
 
 | Bits | Meaning |
@@ -439,7 +446,7 @@ They also settle the question of this document: the S3 *does* have an I/Q transm
 
 **To make it transmit**
 
-1. Key the chain with `phy_txtone_start(mhz, 0, power)` from `libphy` (Stage 2 does the equivalent). If the firmware forces receive-only (analog stages owned over PBUS, both TX groups off), release that first, or nothing radiates. Keying moves PBUS (4,1) and (5,1) from 0 to 127. Not keyed: dead.
+1. Key the chain with `phy_txtone_start(mhz, 0, power)` from `libphy` (Stage 2 does the equivalent). If the firmware forces receive-only (analog stages owned over PBUS, both TX groups off), release that first, or nothing radiates. Keying moves PBUS (4,1) and (5,1) from 0 to 127. Not keyed: dead. (Missing from the report: after keying, clear bit 18 of `0x60006040`.)
 2. Keying clears `0x600C101C`; grant bank 2 **after** keying: `0x600C101C = 0x4`. Granting another bank silences the output.
 3. Write the samples to `0x3FCD0000`.
 4. Write `(count-1) | (1 << 15)`, then set bit 31 in a **second** write. Poll bit 18, clear run, repeat.
