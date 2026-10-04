@@ -95,6 +95,10 @@ def main():
 def analyse(x, args):
     t = np.arange(len(x)) / args.fs
     y = ((x - np.mean(x)) * np.exp(-2j * np.pi * args.offset * t)).astype(np.complex64)
+    c = lp.coarse_centre(y, args.fs, args.bw)                          # the carrier may sit several kHz from the plan (thermal drift of the crystal)
+    t = np.arange(len(y)) / args.fs
+    y = (y * np.exp(-2j * np.pi * c * t)).astype(np.complex64)
+    print(f"coarse centre {c / 1e3:+.1f} kHz from the expected channel centre")
     frames = lp.demodulate_all(y, args.fs, args.sf, args.bw)
     payload = args.text.encode("latin-1", "replace")
     good = [f for f in frames if f.get("crc_ok") and f.get("payload") == payload]

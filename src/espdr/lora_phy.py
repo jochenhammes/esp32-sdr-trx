@@ -191,14 +191,18 @@ def _peak_bin(w, ref, zp=4):
     return (_parabolic(s, k) / zp) % N
 
 
-def to_chip_rate(iq, os_, phase=0):
-    """Anti-alias filter and decimate to one sample per chip (the bandwidth)."""
+def lowpassed(iq, os_):
+    """The recording low-passed to the bandwidth, still at the full rate (decimate it with `[phase::os_]`)."""
     if os_ == 1:
         return np.asarray(iq, dtype=np.complex64)
     from scipy import signal
     taps = signal.firwin(8 * os_ + 1, 0.9 / os_)
-    y = signal.fftconvolve(iq, taps, mode="same")
-    return y[phase::os_].astype(np.complex64)
+    return signal.oaconvolve(iq, taps, mode="same").astype(np.complex64)
+
+
+def to_chip_rate(iq, os_, phase=0):
+    """Anti-alias filter and decimate to one sample per chip (the bandwidth)."""
+    return lowpassed(iq, os_)[phase::os_]
 
 
 def _windows(x, N, start, count):
@@ -249,15 +253,16 @@ def detect(x, sf, preamble=8, threshold=6.0):
     return t_apparent, i * stride, j * stride + N, float(np.mean(ratio[i:j + 1]))
 
 
-def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max_payload=64):
+def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max_payload=64, track=0.6):
     """Decode one frame from a complex recording. Returns a dict (payload, crc_ok, header_ok, timing, cfo_hz, snr) or None if no preamble is found."""
     os_ = int(round(fs / bw))
     N = 1 << sf
     up0 = upchirp(0, sf, 1)
     down = np.conj(up0)
     best = None
+    lp_iq = lowpassed(iq, os_)
     for phase in range(os_):
-        x = to_chip_rate(iq, os_, phase)
+        x = lp_iq[phase::os_]
         det = detect(x, sf, preamble)
         if det and (best is None or det[3] > best[1][3]):
             best = (phase, det, x)
@@ -273,7 +278,9 @@ def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max
     n_pre = max(1, min(n_pre, preamble - 1))
     pk, mag, spec = _peaks(_windows(x, N, t0, n_pre), down[None, :])
     wins = _windows(x, N, t0, n_pre)
-    e1 = float(np.mean([((_peak_bin(wins[r], down) + N / 2 - pk[0]) % N) - N / 2 + pk[0] for r in range(n_pre)]))
+    pre_bins = np.array([((_peak_bin(wins[r], down) + N / 2 - pk[0]) % N) - N / 2 + pk[0] for r in range(n_pre)])
+    e1 = float(np.mean(pre_bins))
+    drift = float(np.polyfit(np.arange(n_pre), pre_bins, 1)[0]) if n_pre >= 4 else 0.0        # bins per symbol: the carrier moves while the frame goes on
     e1 = ((e1 + N / 2) % N) - N / 2
     # where does the preamble start? count back up-chirps with the same bin
     start = t0
@@ -314,13 +321,15 @@ def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max
     S = int(round(dt * os_))
     tot = pre_start * os_ + phase + S
     if os_ > 1 and tot % os_ != phase:
-        x = to_chip_rate(iq, os_, tot % os_)
+        x = lp_iq[tot % os_::os_]
     pre_start = tot // os_
     res = float(dt - S / os_)
     shift = 0
     pay0 = pre_start + int(round((preamble + 4.25) * N))
     # bins of the payload: the shift by cfo (bins) and the fractional timing remainder (res chips is a shift of -res bins on up-chirps)
-    off = cfo + (-res) * 1.0
+    # the offset at the start of the payload: the estimates (e1 at the middle of the preamble, b2 at the SFD) belong to the middle between them
+    mid = ((n_pre - 1) / 2.0 + (preamble + 2)) / 2.0
+    off = cfo + (-res) * 1.0 + drift * ((preamble + 4.25) - mid)
     pw = np.abs(np.fft.fft(_windows(x, N, pre_start, max(1, min(k_up, preamble - 1))) * down[None, :], axis=1)) ** 2
     pk_pow = pw.max(axis=1)
     noise_bin = np.median(pw, axis=1) / np.log(2)
@@ -328,60 +337,74 @@ def demodulate(iq, fs, sf, bw, cr_expected=None, preamble=8, sync_word=0x34, max
     out = dict(timing_chips=float(true_start), cfo_bins=float(cfo), cfo_hz=float(cfo * bw / N), phase=phase, quality=q, e1=e1, b2=b2, snr_db=snr,
                start=int(round(true_start * os_ + phase)))
 
-    def sym_at(i):
-        w = x[pay0 + i * N: pay0 + (i + 1) * N]
-        if len(w) < N:
-            return None
-        return int(round(_peak_bin(w, down) - off)) % N
+    def decode(off0):
+        state = [off0]
 
-    # first block: SF-2 rows, 8 columns (CR 4/8)
-    def block_nibbles(i0, sf_app, cw_len, cr_app, count):
-        v = [sym_at(i0 + i) for i in range(cw_len)]
-        if any(s is None for s in v):
-            return None
-        cws = [[0] * cw_len for _ in range(sf_app)]
-        for i, s in enumerate(v):
-            x_ = (s - 1) % N
-            g = x_ ^ (x_ >> 1)
-            bits = [(g >> (sf - 1 - j)) & 1 for j in range(sf)]
-            for j in range(sf_app):
-                cws[(i - j - 1) % sf_app][i] = bits[j]
-        nib = []
-        for r in range(sf_app):
-            c = 0
-            for bt in cws[r]:
-                c = (c << 1) | bt
-            nib.append(hamming_decode(c, cr_app))
-        return nib
+        def sym_at(i):
+            """The symbol value of payload symbol i (called in order). The offset follows a drifting carrier: the part of the bin that is not an integer is the offset error."""
+            w = x[pay0 + i * N: pay0 + (i + 1) * N]
+            if len(w) < N:
+                return None
+            b = _peak_bin(w, down) - state[0]
+            sym = int(round(b))
+            state[0] += track * (b - sym)
+            return sym % N
 
-    nib = block_nibbles(0, sf - 2, 8, 4, 0)
-    if nib is None:
-        return dict(out, payload=None, header_ok=False, crc_ok=False)
-    plen = (nib[0] << 4) | nib[1]
-    cr = nib[2] >> 1
-    has_crc = bool(nib[2] & 1)
-    out.update(payload_len=plen, cr=cr, has_crc=has_crc)
-    if not (1 <= cr <= 4) or plen == 0 or plen > max_payload:
-        return dict(out, payload=None, header_ok=False, crc_ok=False)
-    need = 5 + 2 * plen + (4 if has_crc else 0)
-    sym_i = 8
-    while len(nib) < need:
-        more = block_nibbles(sym_i, sf, 4 + cr, cr, 0)
-        if more is None:
+        # first block: SF-2 rows, 8 columns (CR 4/8)
+        def block_nibbles(i0, sf_app, cw_len, cr_app, count):
+            v = [sym_at(i0 + i) for i in range(cw_len)]
+            if any(s is None for s in v):
+                return None
+            cws = [[0] * cw_len for _ in range(sf_app)]
+            for i, s in enumerate(v):
+                x_ = (s - 1) % N
+                g = x_ ^ (x_ >> 1)
+                bits = [(g >> (sf - 1 - j)) & 1 for j in range(sf)]
+                for j in range(sf_app):
+                    cws[(i - j - 1) % sf_app][i] = bits[j]
+            nib = []
+            for r in range(sf_app):
+                c = 0
+                for bt in cws[r]:
+                    c = (c << 1) | bt
+                nib.append(hamming_decode(c, cr_app))
+            return nib
+
+        nib = block_nibbles(0, sf - 2, 8, 4, 0)
+        if nib is None:
             return dict(out, payload=None, header_ok=False, crc_ok=False)
-        nib += more
-        sym_i += 4 + cr
-    hdr = header_nibbles(plen, cr, has_crc)
-    header_ok = nib[3:5] == hdr[3:5]
-    seq = whitening_sequence()
-    body = nib[5:5 + 2 * plen]
-    payload = bytes(((body[2 * i] | (body[2 * i + 1] << 4)) ^ seq[i]) for i in range(plen))
-    crc_ok = True
-    if has_crc:
-        crcn = nib[5 + 2 * plen:5 + 2 * plen + 4]
-        rx_crc = crcn[0] | (crcn[1] << 4) | (crcn[2] << 8) | (crcn[3] << 12)
-        crc_ok = rx_crc == crc16(payload)
-    return dict(out, payload=payload, header_ok=header_ok, crc_ok=crc_ok, end=out["start"] + frame_samples(plen, sf, os_, cr, preamble, has_crc))
+        plen = (nib[0] << 4) | nib[1]
+        cr = nib[2] >> 1
+        has_crc = bool(nib[2] & 1)
+        out.update(payload_len=plen, cr=cr, has_crc=has_crc)
+        if not (1 <= cr <= 4) or plen == 0 or plen > max_payload:
+            return dict(out, payload=None, header_ok=False, crc_ok=False)
+        need = 5 + 2 * plen + (4 if has_crc else 0)
+        sym_i = 8
+        while len(nib) < need:
+            more = block_nibbles(sym_i, sf, 4 + cr, cr, 0)
+            if more is None:
+                return dict(out, payload=None, header_ok=False, crc_ok=False)
+            nib += more
+            sym_i += 4 + cr
+        hdr = header_nibbles(plen, cr, has_crc)
+        header_ok = nib[3:5] == hdr[3:5]
+        seq = whitening_sequence()
+        body = nib[5:5 + 2 * plen]
+        payload = bytes(((body[2 * i] | (body[2 * i + 1] << 4)) ^ seq[i]) for i in range(plen))
+        crc_ok = True
+        if has_crc:
+            crcn = nib[5 + 2 * plen:5 + 2 * plen + 4]
+            rx_crc = crcn[0] | (crcn[1] << 4) | (crcn[2] << 8) | (crcn[3] << 12)
+            crc_ok = rx_crc == crc16(payload)
+        return dict(out, payload=payload, header_ok=header_ok, crc_ok=crc_ok, end=out["start"] + frame_samples(plen, sf, os_, cr, preamble, has_crc))
+
+    # the offset is known modulo N / 2 bins only (it comes from the sum of two measurements): try the other candidate if the header does not check
+    first = decode(off)
+    if first.get("header_ok"):
+        return first
+    second = decode(off + N / 2 if off < 0 else off - N / 2)
+    return second if second.get("header_ok") else first
 
 
 def demodulate_all(iq, fs, sf, bw, preamble=8, sync_word=0x34, max_frames=1000):
@@ -401,3 +424,20 @@ def demodulate_all(iq, fs, sf, bw, preamble=8, sync_word=0x34, max_frames=1000):
         seg = seg[max(end, 1):]
         base += max(end, 1)
     return out
+
+
+def coarse_centre(iq, fs, bw, nper=4096):
+    """The centre frequency of the strongest burst in a recording, from its spectrum: the middle of the band that holds more than 5 % of the peak power.
+    Good to a fraction of the bandwidth; demodulate() needs the rest, so shift the recording by this much first when the offset can exceed bw / 4."""
+    from scipy import signal
+    x = np.asarray(iq) - np.mean(iq)
+    blk = max(1, int(fs * 0.002))
+    env = np.abs(x[:len(x) // blk * blk]).reshape(-1, blk).mean(axis=1) ** 2
+    on = np.flatnonzero(env > 0.3 * env.max())
+    a = int(on[0] * blk) + 5 * blk
+    seg = x[a:a + int(0.08 * fs)]
+    f, p = signal.welch(seg, fs, nperseg=min(nper, len(seg)), return_onesided=False)
+    o = np.argsort(f)
+    f, p = f[o], p[o]
+    m = p > 0.05 * p.max()
+    return float((f[m].min() + f[m].max()) / 2)
